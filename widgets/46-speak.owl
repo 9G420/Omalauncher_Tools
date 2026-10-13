@@ -1,0 +1,77 @@
+widget "Codex 播報" {
+  page: 1
+  order: 6
+  size: 3x4
+  minSize: 3x4
+  meta { owl: 5; description: "跟隨最近活動的 Codex 對話，顯示回覆時間並播報摘要。"; version: "2.2"; license: "MIT"; category: "productivity" }
+  requires { pacman: ["python", "espeak-ng", "libpulse"] }
+  source uiLanguage = file("~/.config/omalauncher/voice-ui-language")
+  let zh = uiLanguage != "en"
+  source service = cmd("__HOME__/.local/bin/oma-voice ensure") every 30s
+  source voice = file("~/.cache/oma-voice/state.json") json
+  source now = clock every 5s
+  let offline = voice.checked_at == null || now - voice.checked_at > 30
+  let replyTime = voice.reply_at == null ? (zh ? "尚無正式回覆" : "No completed reply yet") : (zh ? "回覆 ${fmtTime(voice.reply_at, 'MM-dd HH:mm')}" : "Reply ${fmtTime(voice.reply_at, 'MM-dd HH:mm')}")
+  let statusText = offline ? (zh ? "服務未更新 · 點同步重試" : "Service offline · tap Sync") : voice.awaiting ? (zh ? "正在回覆 · 下方為上次內容" : "Working · previous reply below") : (zh ? voice.status : voice.status_en) ?? (zh ? "連接中…" : "Connecting…")
+  onTap: screen()
+  Column {
+    fill: true
+    gap: 6
+    Row {
+      Text { text: zh ? "CODEX 播報" : "CODEX VOICE"; style: label; color: accent; weight: 1 }
+      Button { text: zh ? "EN" : "中"; width: 46; onTap: run(zh ? "__HOME__/.local/bin/oma-voice language en" : "__HOME__/.local/bin/oma-voice language zh") }
+    }
+    Text { text: statusText; style: small; maxLines: 2; color: offline ? yellow : muted }
+    Text { text: replyTime; style: small; color: muted }
+    Text { text: voice.summary == "" || voice.summary == null ? (zh ? "正式回覆完成後，這裡會自動更新。" : "Updates automatically when a reply is complete.") : voice.summary; style: small; maxLines: 4; weight: 1 }
+    Row {
+      gap: 4
+      Button { text: (zh ? "播放" : "Play"); weight: 1; height: 40; onTap: run("__HOME__/.local/bin/oma-voice replay") }
+      Button { text: (zh ? "停止" : "Stop"); weight: 1; height: 40; onTap: run("__HOME__/.local/bin/oma-voice stop") }
+    }
+    Row {
+      gap: 4
+      Button { text: (zh ? "同步" : "Sync"); weight: 1; height: 40; onTap: run("__HOME__/.local/bin/oma-voice refresh") }
+      Button { text: (zh ? "詳情" : "Details"); weight: 1; height: 40; onTap: screen() }
+    }
+  }
+  screen {
+    title: (zh ? "CODEX // 播報" : "CODEX // VOICE")
+    Column {
+      fill: true
+      height: screenHeight
+      gap: 10
+      Row {
+        height: 44
+        Button { weight: 1; height: 44; text: (zh ? "同步回覆" : "Sync reply"); onTap: run("__HOME__/.local/bin/oma-voice refresh") }
+        Button { weight: 1; height: 44; text: (zh ? "停止播放" : "Stop audio"); onTap: run("__HOME__/.local/bin/oma-voice stop") }
+        Button { weight: 1; height: 44; text: (zh ? "返回" : "Back"); onTap: close() }
+      }
+      Column {
+        scroll: true
+        fill: width
+        height: max(1, screenHeight - 54)
+        gap: 12
+        Text { text: statusText; color: offline ? yellow : accent; maxLines: 3 }
+        Text { text: replyTime; style: small; color: muted }
+        Text { text: (zh ? voice.error : voice.error_en) ?? ""; style: small; color: red; maxLines: 5 }
+        Text { text: voice.follow_latest ? (zh ? "跟隨最近活動的對話" : "Following latest active chat") : (zh ? "已固定此對話" : "Pinned to this chat"); bold: true }
+        Text { text: voice.thread ?? (zh ? "等待連接" : "Waiting for connection"); style: small; maxLines: 2; color: muted }
+        Text { text: (zh ? "正式回覆完成後自動更新；同步只更新文字，不會自動重播舊內容。" : "Completed replies update automatically. Sync refreshes text without replaying older replies."); style: small; maxLines: 4; color: muted }
+        Row {
+          Button { weight: 1; height: 44; text: (zh ? "播放摘要" : "Summary"); onTap: run("__HOME__/.local/bin/oma-voice replay") }
+          Button { weight: 1; height: 44; text: (zh ? "播放全文" : "Full reply"); onTap: run("__HOME__/.local/bin/oma-voice replay --full") }
+        }
+        Text { text: (zh ? "最近回覆" : "Latest reply"); bold: true; color: accent }
+        Text { text: voice.full == "" || voice.full == null ? (zh ? "尚無正式回覆" : "No completed reply yet") : voice.full; maxLines: 160 }
+        Button { fill: width; height: 44; text: (zh ? "複製全文" : "Copy reply"); onTap: copy(voice.full ?? "") }
+        Button { fill: width; height: 44; text: zh ? "介面語言：中文 → English" : "Language: English → 中文"; onTap: run(zh ? "__HOME__/.local/bin/oma-voice language en" : "__HOME__/.local/bin/oma-voice language zh") }
+        Text { text: (zh ? "播報設定" : "Voice settings"); bold: true; color: accent }
+        Button { fill: width; height: 44; text: voice.follow_latest ? (zh ? "對話：自動跟隨" : "Chat: follow latest") : (zh ? "對話：固定" : "Chat: pinned"); onTap: run("__HOME__/.local/bin/oma-voice follow") }
+        Button { fill: width; height: 44; text: voice.auto ? (zh ? "自動播報：開" : "Auto-read: on") : (zh ? "自動播報：關" : "Auto-read: off"); onTap: run("__HOME__/.local/bin/oma-voice auto toggle") }
+        Button { fill: width; height: 44; text: voice.engine == "offline" ? (zh ? "聲音：離線" : "Voice: offline") : (zh ? "聲音：自然（線上）" : "Voice: online"); onTap: run("__HOME__/.local/bin/oma-voice engine toggle") }
+        Button { fill: width; height: 44; text: (zh ? "開始語音輸入" : "Start dictation"); onTap: run("__HOME__/.local/bin/speak") }
+      }
+    }
+  }
+}

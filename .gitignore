@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+tts/
+*.wav
+*.mp3
+*.log
+*.tmp
+.cache/
+voice.json
+state.json
+latest.txt
+token
+backups/
+dist/

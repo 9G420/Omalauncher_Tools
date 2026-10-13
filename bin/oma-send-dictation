@@ -1,0 +1,9 @@
+#!/usr/bin/python
+import pathlib, subprocess, json
+try:
+    text = pathlib.Path.home().joinpath('.cache/oma-speak/latest.txt').read_text().strip()
+    if not text:
+        raise ValueError('請先開始語音輸入，停止後保存。')
+    subprocess.run([str(pathlib.Path.home()/'.local/bin/oma-voice'), 'send', '--json', '--text', text], check=False)
+except (OSError, ValueError) as e:
+    print(json.dumps({'ok': False, 'error': str(e), 'error_en': 'Start dictation, stop and save first.'}, ensure_ascii=False))

@@ -1,0 +1,27 @@
+widget "語音輸入" {
+ page: 1
+ order: 7
+ size: 3x3
+ minSize: 3x3
+ meta { owl: 5; description: "恢復原本的語音聽寫入口，保存後直接送到目前 Codex 對話。"; version: "2.2"; license: "MIT"; category: "productivity" }
+ requires { pacman: ["python", "curl", "util-linux"] }
+ source uiLanguage = file("~/.config/omalauncher/voice-ui-language")
+ let zh = uiLanguage != "en"
+ source latest = file("~/.cache/oma-speak/latest.txt")
+ state result = ""
+ state sending = false
+ on result { sending = false }
+ Column {
+  gap: 5
+  Row {
+   Text { text: zh ? "語音輸入" : "DICTATION"; style: label; color: accent; weight: 1 }
+   Button { text: zh ? "EN" : "中"; width: 46; onTap: run(zh ? "__HOME__/.local/bin/oma-voice language en" : "__HOME__/.local/bin/oma-voice language zh") }
+  }
+  Button { text: (zh ? "開始語音輸入" : "Start dictation"); onTap: run("__HOME__/.local/bin/speak") }
+  Text { text: latest == "" || latest == null ? (zh ? "開始 → 說話 → 停止並保存" : "Start → speak → stop and save") : latest; style: small; maxLines: 3; weight: 1 }
+  Text { text: result == "" ? (zh ? "保存後可直接送出" : "Save, then send to your chat") : parseJson(result).ok ? (zh ? "已送到目前對話" : "Sent to current chat") : (zh ? parseJson(result).error : parseJson(result).error_en) ?? (zh ? "送出完成" : "Request completed"); style: small; maxLines: 2 }
+  if sending { Text { text: (zh ? "正在送出…" : "Sending…"); style: small; color: accent } }
+  else { Button { text: (zh ? "送到目前對話" : "Send to chat"); onTap: { sending = true; result = run("__HOME__/.local/bin/oma-send-dictation") } } }
+  Button { text: (zh ? "複製文字" : "Copy text"); onTap: copy(latest) }
+ }
+}

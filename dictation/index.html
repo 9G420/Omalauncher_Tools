@@ -1,0 +1,105 @@
+<!doctype html><html lang="zh-Hant"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>語音輸入</title>
+<style>body{font:18px system-ui;background:#121820;color:#eef3fa;margin:24px auto;padding:0 20px;max-width:620px}button,select,textarea{font:inherit;border-radius:10px;padding:14px;margin:6px 0;box-sizing:border-box}button{background:#93c5fd;color:#101820;border:0;min-height:52px}textarea{width:100%;height:240px;background:#202c3a;color:white;border:1px solid #64748b}select{width:100%}p{line-height:1.5}#status{color:#b9d9ff;min-height:80px;white-space:pre-wrap}.buttons{display:flex;gap:10px;flex-wrap:wrap}small{color:#aab8ca}</style>
+<div class="buttons" style="justify-content:space-between;align-items:center"><h1>語音輸入</h1><button id="ui-language" type="button">English</button></div><p>按開始後說一段話；結束後可直接點文字修改，再保存到首頁。</p>
+<select id="language"><option value="zh-TW">中文（台灣）</option><option value="zh-CN">中文（普通話）</option><option value="en-US">English</option><option value="th-TH">ไทย</option></select>
+<div class="buttons"><button id="chinese">說中文</button><button id="english">Speak English</button></div><p><small>中英混說可能誤判。說英文前點 English，說完切回中文，文字會接在同一段。</small></p><div class="buttons"><button id="start">開始語音輸入</button><button id="stop" disabled>停止</button></div><p id="status" role="status" aria-live="polite">準備好了。首次使用請允許瀏覽器使用麥克風。</p>
+<div id="alternatives"></div><textarea id="text" placeholder="辨識文字會出現在這裡，也可以手動修改。"></textarea>
+<div class="buttons"><button id="save">保存到首頁</button><button id="copy">複製文字</button><button id="clear">清空</button></div>
+<p>回首頁「語音輸入」工具，按「送到目前對話」，不用複製貼上。</p><small>辨識使用瀏覽器的語音服務，可能將音訊傳給服務供應商。文字不會自動送給 Codex。</small>
+<script>
+const $=id=>document.getElementById(id),status=$('status'),text=$('text');
+const token=location.hash.slice(1);history.replaceState(null,'',location.pathname);
+
+const UI_STRINGS = {"語音輸入": "Dictation", "按開始後說一段話；結束後可直接點文字修改，再保存到首頁。": "Tap Start and speak. Edit the text after stopping, then save it to the home screen.", "說中文": "Speak Chinese", "中英混說可能誤判。說英文前點 English，說完切回中文，文字會接在同一段。": "Mixed languages may be misheard. Choose English before speaking English; switching back keeps your text.", "開始語音輸入": "Start dictation", "停止": "Stop", "準備好了。首次使用請允許瀏覽器使用麥克風。": "Ready. Allow microphone access when asked.", "辨識文字會出現在這裡，也可以手動修改。": "Recognized text appears here. You can edit it.", "保存到首頁": "Save to home", "複製文字": "Copy text", "清空": "Clear", "回首頁「語音輸入」工具，按「送到目前對話」，不用複製貼上。": "Return to the Dictation widget and tap Send to chat.", "辨識使用瀏覽器的語音服務，可能將音訊傳給服務供應商。文字不會自動送給 Codex。": "Browser speech recognition may send audio to its provider. Saving does not automatically send text to Codex.", "正在聽… 說完按停止；點文字框可立即編輯。": "Listening… Tap Stop when finished; tap the text box to edit.", "辨識已停止。直接點文字框修改，再保存到首頁。": "Recognition stopped. Edit the text, then save it.", "已暫停聽寫，現在可直接編輯文字。": "Dictation paused. You can edit the text.", "已停止，可保存文字。": "Stopped. You can save the text.", "已清空。": "Cleared.", "正在停止…": "Stopping…", "保存失敗：": "Save failed: ", "已保存。回首頁「語音輸入」按「送到目前對話」。": "Saved. Return to the Dictation widget and tap Send to chat.", "已複製。": "Copied.", "請長按選取的文字並複製。": "Long-press the selected text to copy it.", "此瀏覽器不支援語音辨識，請使用 Chrome 開啟。": "This browser does not support speech recognition. Open in Chrome.", "麥克風權限被拒絕。請到 Android 設定 → 應用程式 → 目前瀏覽器 → 權限 → 麥克風，並在瀏覽器的本站設定允許麥克風。給 omalauncher 權限不會同時授權瀏覽器。": "Microphone denied. Allow the browser microphone permission in Android settings and browser site settings.", "瀏覽器不允許此語音服務，請用 Chrome 開啟。": "Speech service blocked. Try Chrome.", "無法取得麥克風。請確認瀏覽器權限，並關閉其他正在錄音的程式。": "Microphone unavailable. Check browser permissions and close other recording apps.", "語音服務連線失敗，請檢查網路後重試。": "Speech service network error. Check connection and retry.", "沒聽到聲音，請按開始重試。": "No speech heard. Tap Start to retry.", "此語音服務不支援所選語言，請切換語言。": "This speech service does not support the selected language.", "語音已停止。": "Speech stopped.", "先按停止，再選候選文字。": "Tap Stop before choosing another transcript.", "這句已修改，請直接編輯文字。": "This sentence was edited; change it directly.", "最近一句候選（停止後可選）：": "Alternatives for the last phrase (select after stopping):", "請從首頁「語音輸入」重新開啟。": "Reopen from the Dictation widget.", "辨識錯誤：": "Recognition error: ", "無法開始：": "Could not start: "};
+let uiLanguage='zh';
+const originalNodes=[];
+const walker=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT);
+while(walker.nextNode()){const node=walker.currentNode;if(UI_STRINGS[node.textContent.trim()])originalNodes.push([node,node.textContent.trim()]);}
+const originalPlaceholder=$('text').getAttribute('placeholder');
+let updatingStatus=false;
+function localize(value){if(uiLanguage==='zh')return value;for(const [zh,en] of Object.entries(UI_STRINGS)){if(value===zh)return en;if(value.startsWith(zh) && zh.endsWith('：'))return en+value.slice(zh.length);}return value;}
+function applyLanguage(){
+ document.documentElement.lang=uiLanguage==='en'?'en':'zh-Hant';
+ for(const [node,zh] of originalNodes)node.textContent=uiLanguage==='en'?UI_STRINGS[zh]:zh;
+ $('text').placeholder=localize(originalPlaceholder);
+ $('ui-language').textContent=uiLanguage==='en'?'中文':'English';
+ const raw=status.dataset.original || status.textContent;status.textContent=localize(raw);
+}
+const statusObserver=new MutationObserver(()=>{if(updatingStatus)return;updatingStatus=true;let v=status.textContent;const old=status.dataset.original;if(v!==localize(old||'')){status.dataset.original=v;const translated=localize(v);if(translated!==v)status.textContent=translated;}updatingStatus=false;});
+statusObserver.observe(status,{childList:true,characterData:true,subtree:true});
+$('ui-language').onclick=async()=>{
+ const value=uiLanguage==='en'?'zh':'en';
+ try{const response=await fetch('/language',{method:'POST',headers:{'Content-Type':'application/json','X-Speak-Token':token},body:JSON.stringify({language:value})});if(!response.ok)throw Error(await response.text());uiLanguage=value;applyLanguage();}
+ catch(error){status.textContent='Language change failed: '+error.message;}
+};
+fetch('/language').then(r=>r.text()).then(value=>{uiLanguage=value.trim()==='en'?'en':'zh';applyLanguage();}).catch(()=>{});
+
+const Speech=window.SpeechRecognition||window.webkitSpeechRecognition;
+let recognition=null,wanted=false,timer=null,failures=0,committed='',interim='',afterStop=null;
+text.value=localStorage.getItem('oma-speak-draft')||'';
+$('language').value=localStorage.getItem('oma-speak-language')||'zh-TW';
+function persist(){localStorage.setItem('oma-speak-draft',text.value);}
+text.oninput=persist;
+function controls(){ $('start').disabled=wanted||!!recognition||!Speech;$('stop').disabled=!wanted&&!recognition;$('language').disabled=wanted||!!recognition;text.readOnly=false; }
+function halt(message){wanted=false;clearTimeout(timer);status.textContent=message;controls();}
+function startSession(){
+ if(!wanted||recognition)return;
+ const r=new Speech();recognition=r;const base=text.value;committed=base;interim='';
+ r.lang=$('language').value;r.interimResults=true;r.continuous=false;r.maxAlternatives=3;let endedByError=false;
+ r.onstart=()=>{status.textContent='正在聽… 說完按停止；點文字框可立即編輯。';controls();};
+ r.onresult=e=>{
+  if(recognition!==r)return;
+  // Results are a session snapshot, not new append-only sentences.
+  let rendered=base;
+  for(let i=0;i<e.results.length;i++){
+   const result=e.results[i],words=result[0].transcript;
+   const prefix=rendered+(rendered&&!/[\s\n]$/.test(rendered)?' ':'');
+   if(result.isFinal)showAlternatives(result,prefix);
+   rendered=prefix+words;
+  }
+  text.value=rendered;persist();
+ };
+ r.onerror=e=>{if(recognition!==r)return;endedByError=true;failures++;const errors={'not-allowed':'麥克風權限被拒絕。請到 Android 設定 → 應用程式 → 目前瀏覽器 → 權限 → 麥克風，並在瀏覽器的本站設定允許麥克風。給 omalauncher 權限不會同時授權瀏覽器。','service-not-allowed':'瀏覽器不允許此語音服務，請用 Chrome 開啟。','audio-capture':'無法取得麥克風。請確認瀏覽器權限，並關閉其他正在錄音的程式。','network':'語音服務連線失敗，請檢查網路後重試。','no-speech':'沒聽到聲音，請按開始重試。','language-not-supported':'此語音服務不支援所選語言，請切換語言。','aborted':'語音已停止。'};
+ status.textContent=errors[e.error]||'辨識錯誤：'+e.error;
+ halt(status.textContent);};
+ r.onend=()=>{
+  if(recognition!==r)return;
+  recognition=null;wanted=false;persist();controls();
+  if(afterStop){const f=afterStop;afterStop=null;f();}
+  else if(!endedByError)status.textContent='辨識已停止。直接點文字框修改，再保存到首頁。';
+ };
+ try{r.start();controls();}catch(e){recognition=null;halt('無法開始：'+e.message);}
+}
+function stopForEditing(){
+ const r=recognition;recognition=null;wanted=false;clearTimeout(timer);afterStop=null;
+ if(r)r.abort();controls();persist();
+}
+text.onfocus=()=>{if(recognition){stopForEditing();status.textContent='已暫停聽寫，現在可直接編輯文字。';}};
+text.oninput=()=>{if(recognition)stopForEditing();persist();};
+function switchLanguage(lang){
+ stopForEditing();$('language').value=lang;localStorage.setItem('oma-speak-language',lang);failures=0;
+ wanted=true;startSession();
+}
+$('chinese').onclick=()=>switchLanguage('zh-CN');
+$('english').onclick=()=>switchLanguage('en-US');
+$('language').onchange=()=>localStorage.setItem('oma-speak-language',$('language').value);
+function showAlternatives(result,prefix){
+ const box=$('alternatives');box.replaceChildren();
+ if(result.length<2)return;
+ const label=document.createElement('small');label.textContent='最近一句候選（停止後可選）：';box.append(label);
+ for(let j=0;j<result.length;j++){
+  const b=document.createElement('button');b.textContent=result[j].transcript;
+  const original=prefix+result[0].transcript,candidate=prefix+result[j].transcript;
+  b.onclick=()=>{if(recognition||wanted){status.textContent='先按停止，再選候選文字。';return;}if(!text.value.startsWith(original)){status.textContent='這句已修改，請直接編輯文字。';return;}text.value=candidate+text.value.slice(original.length);persist();box.replaceChildren();};box.append(b);
+ }
+}
+
+$('start').onclick=()=>{failures=0;wanted=true;startSession();};
+$('stop').onclick=()=>{halt('正在停止…');if(recognition)recognition.stop();else status.textContent='已停止，可保存文字。';};
+async function save(){try{if(!token)throw Error('請從首頁「語音輸入」重新開啟。');const r=await fetch('/text',{method:'POST',headers:{'Content-Type':'application/json','X-Speak-Token':token},body:JSON.stringify({text:text.value}),signal:AbortSignal.timeout(10000)});const msg=await r.text();if(!r.ok)throw Error(msg);status.textContent='已保存。回首頁「語音輸入」按「送到目前對話」。';}catch(e){status.textContent='保存失敗：'+e.message;}}
+$('save').onclick=()=>{wanted=false;clearTimeout(timer);if(recognition){afterStop=save;recognition.stop();}else save();controls();};
+$('copy').onclick=async()=>{try{await navigator.clipboard.writeText(text.value);status.textContent='已複製。';}catch(e){text.focus();text.select();status.textContent='請長按選取的文字並複製。';}};
+$('clear').onclick=()=>{halt('已清空。');afterStop=null;if(recognition){recognition.onresult=null;recognition.abort();}text.value='';committed='';interim='';$('alternatives').replaceChildren();persist();};
+document.addEventListener('visibilitychange',()=>{if(document.hidden){wanted=false;clearTimeout(timer);if(recognition)recognition.stop();persist();}});
+if(!Speech)status.textContent='此瀏覽器不支援語音辨識，請使用 Chrome 開啟。';controls();
+</script></html>

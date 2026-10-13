@@ -25,7 +25,7 @@ python install.py
 
 English: Download this repository, run `python install.py` inside it, then tap EN/中 on either widget to switch both interfaces and the dictation page. The installer preserves your own settings and conversation data.
 
-安裝腳本會安裝 Python、curl、util-linux、espeak-ng、libpulse，以及獨立虛擬環境內的 edge-tts。首頁會出現「Codex 播報」與「語音輸入」。Linux 必須已可透過 PulseAudio 播放聲音。
+安裝腳本會安裝 Python、curl、util-linux、espeak-ng、libpulse、mpg123，以及獨立虛擬環境內的 edge-tts。首頁會出現「Codex 播報」與「語音輸入」。Linux 必須已可透過 PulseAudio 播放聲音。
 
 已有全部依賴時可使用 `python install.py --skip-deps`；這不會建立 TTS 虛擬環境。
 

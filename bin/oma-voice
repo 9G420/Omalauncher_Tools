@@ -1,0 +1,2 @@
+#!/bin/sh
+exec python "$HOME/.local/share/oma-voice/oma_voice.py" "$@"

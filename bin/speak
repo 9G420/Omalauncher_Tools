@@ -1,0 +1,25 @@
+#!/bin/bash
+set -eu
+cache="$HOME/.cache/oma-speak"
+case "${1:-}" in
+  --text) cat "$cache/latest.txt" 2>/dev/null || true; exit ;;
+  --help) echo 'speak: open voice input; speak --text: print latest dictation. Bash Ctrl+G inserts it.'; exit ;;
+  '') ;;
+  *) echo 'Usage: speak [--text|--help]' >&2; exit 2 ;;
+esac
+mkdir -p "$cache"
+exec 9>"$cache/start.lock"
+flock 9
+if ! curl --noproxy '*' -fsS --max-time 2 http://127.0.0.1:18763/health 2>/dev/null | grep -qx oma-speak-v1; then
+  nohup python "$HOME/.local/share/oma-speak/server.py" >"$cache/server.log" 2>&1 < /dev/null 9>&- &
+  for ((i=0;i<40;i++)); do
+    if curl --noproxy '*' -fsS --max-time 1 http://127.0.0.1:18763/health 2>/dev/null | grep -qx oma-speak-v1; then break; fi
+    sleep .1
+  done
+fi
+if ! curl --noproxy '*' -fsS --max-time 2 http://127.0.0.1:18763/health 2>/dev/null | grep -qx oma-speak-v1; then
+  echo "Could not start voice input. See $cache/server.log" >&2; exit 1
+fi
+token=$(cat "$cache/token")
+flock -u 9
+xdg-open "http://127.0.0.1:18763/#$token"
