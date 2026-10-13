@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Codex reply reader with keyless online TTS and offline neural fallback."""
+"""Voice reader and dictation bridge for Codex logs or a tmux terminal."""
 import argparse
 import datetime
 import fcntl
@@ -16,7 +16,7 @@ import threading
 import time
 import uuid
 
-TRANSLATIONS = {'已連接，等待回覆': 'Connected, waiting for reply', '已同步最近回覆': 'Latest reply synced', 'Codex 正在回覆…': 'Codex is working…', '收到新回覆': 'New reply received', '已停止': 'Stopped', '正在播放': 'Preparing audio', '播放完成': 'Playback complete', '播放失敗': 'Playback failed', '自動播報已開啟': 'Auto-read enabled', '自動播報已關閉': 'Auto-read disabled', '已切換線上自然語音': 'Online voice selected', '已切換離線神經語音': 'Offline voice selected', '已送到這個 Codex 會話的佇列': 'Sent to this Codex chat queue', '等待會話記錄': 'Waiting for chat log', '還沒有可播放的回覆': 'No reply available to play', '找不到 Codex 會話': 'No local Codex chat found', '找不到指定會話': 'Chat not found', '需要 espeak-ng 和 paplay': 'espeak-ng and paplay are required', '播放逾時': 'Playback timed out', '請先輸入內容（最多 16000 字）': 'Enter text first (maximum 16000 characters)', '文字含有控制字元': 'Text contains control characters', '送出失敗': 'Could not send text', '未知命令': 'Unknown command', '請選 online 或 offline': 'Choose online or offline', '請先開始語音輸入，停止後保存。': 'Start dictation, stop and save first.'}
+TRANSLATIONS = {'已連接，等待回覆': 'Connected, waiting for reply', '已同步最近回覆': 'Latest reply synced', 'Codex 正在回覆…': 'Codex is working…', '收到新回覆': 'New reply received', '已停止': 'Stopped', '正在播放': 'Preparing audio', '播放完成': 'Playback complete', '播放失敗': 'Playback failed', '自動播報已開啟': 'Auto-read enabled', '自動播報已關閉': 'Auto-read disabled', '已切換線上自然語音': 'Online voice selected', '已切換離線神經語音': 'Offline voice selected', '已送到這個 Codex 會話的佇列': 'Sent to this Codex chat queue', '已連接終端 · 點播放讀取畫面': 'Terminal connected · tap Play to read screen', '請在現有終端執行 tmux new -A -s oma-voice': 'Run tmux new -A -s oma-voice in your existing terminal', '等待會話記錄': 'Waiting for chat log', '還沒有可播放的回覆': 'No reply available to play', '找不到 Codex 會話': 'No local Codex chat found', '找不到指定會話': 'Chat not found', '需要 espeak-ng 和 paplay': 'espeak-ng and paplay are required', '播放逾時': 'Playback timed out', '請先輸入內容（最多 16000 字）': 'Enter text first (maximum 16000 characters)', '文字含有控制字元': 'Text contains control characters', '送出失敗': 'Could not send text', '未知命令': 'Unknown command', '請選 online 或 offline': 'Choose online or offline', '請先開始語音輸入，停止後保存。': 'Start dictation, stop and save first.'}
 
 def english(text):
     if text.startswith('正在播放 · '):
@@ -28,6 +28,7 @@ CACHE = HOME / '.cache/oma-voice'
 SOCKET = CACHE / 'control.sock'
 CONFIG = HOME / '.config/omalauncher/voice.json'
 SESSIONS = HOME / '.codex/sessions'
+TMUX_SESSION = 'oma-voice'
 
 
 def atomic_json(path, value):
@@ -109,6 +110,39 @@ def latest_session():
     return str(uuid.UUID(meta.get('id') or meta.get('session_id')))
 
 
+def terminal_snapshot():
+    """Read only the current pane of the dedicated, user-entered tmux session."""
+    if not shutil.which('tmux'):
+        raise ValueError('需要 tmux / tmux is required')
+    pane = subprocess.run(['tmux', 'display-message', '-p', '-t', TMUX_SESSION, '#{pane_id}'],
+                          capture_output=True, text=True, timeout=3)
+    if pane.returncode or not re.fullmatch(r'%[0-9]+', pane.stdout.strip()):
+        raise ValueError('請在現有終端執行 tmux new -A -s oma-voice')
+    pane_id = pane.stdout.strip()
+    command = subprocess.run(['tmux', 'display-message', '-p', '-t', pane_id, '#{pane_current_command}'],
+                             capture_output=True, text=True, timeout=3).stdout.strip()
+    output = subprocess.run(['tmux', 'capture-pane', '-p', '-t', pane_id, '-S', '-80'],
+                            capture_output=True, text=True, timeout=3)
+    if output.returncode:
+        raise ValueError('無法讀取終端畫面')
+    clean = ''.join(ch for ch in output.stdout if ch in '\n\t' or ord(ch) >= 32)
+    clean = '\n'.join(line.rstrip() for line in clean.splitlines()).strip()
+    label = 'Claude' if 'claude' in command.lower() else 'Codex' if 'codex' in command.lower() else (command or 'Terminal')
+    return pane_id, label, clean[-6000:]
+
+
+def terminal_send(pane_id, text):
+    """Submit one explicit user action to the already selected tmux pane."""
+    if not re.fullmatch(r'%[0-9]+', pane_id):
+        raise ValueError('無效的終端窗格')
+    text = ' '.join(text.splitlines()).strip()
+    for keys in (['-l', text], ['Enter']):
+        result = subprocess.run(['tmux', 'send-keys', '-t', pane_id, *keys],
+                                capture_output=True, text=True, timeout=5)
+        if result.returncode:
+            raise ValueError(result.stderr.strip() or '終端輸入失敗')
+
+
 class Reader:
     def __init__(self):
         self.config = read_json(CONFIG, {})
@@ -118,8 +152,13 @@ class Reader:
         self.config.setdefault('rate', 175)
         self.config.setdefault('engine', 'online')
         if not self.config.get('thread'):
-            self.config['thread'] = latest_session()
+            try:
+                self.config['thread'] = latest_session()
+            except ValueError:
+                self.config['thread'] = None
         self.config.setdefault('follow_latest', True)
+        self.config.setdefault('source', 'codex')
+        self.term_last = None
         self.checked_session = 0
         self.heartbeat = 0
         atomic_json(CONFIG, self.config)
@@ -143,7 +182,7 @@ class Reader:
                 self.state['reply_at'] = datetime.datetime.fromisoformat(stamp.replace('Z', '+00:00')).timestamp()
             except ValueError:
                 self.state['reply_at'] = None
-        self.state.update(auto=self.config['auto'], mode=self.config['mode'], thread=self.config['thread'], engine=self.config['engine'], follow_latest=self.config['follow_latest'], checked_at=time.time())
+        self.state.update(auto=self.config['auto'], mode=self.config['mode'], thread=self.config['thread'], engine=self.config['engine'], follow_latest=self.config['follow_latest'], source=self.config['source'], source_name=self.state.get('source_name','Codex'), checked_at=time.time())
         atomic_json(CACHE / 'state.json', self.state)
 
     def bind(self, thread):
@@ -177,6 +216,10 @@ class Reader:
         self.save()
 
     def poll(self):
+        if self.config['source'] == 'terminal':
+            return self.poll_terminal()
+        if not self.config['thread']:
+            self.config['thread'] = latest_session()
         if time.monotonic() - self.checked_session >= 5:
             self.checked_session = time.monotonic()
             if self.config['follow_latest']:
@@ -217,6 +260,24 @@ class Reader:
             self.save()
             if self.config['auto']:
                 self.play(self.state[self.config['mode']])
+
+    def poll_terminal(self):
+        if time.monotonic() - self.heartbeat < 2:
+            return
+        self.heartbeat = time.monotonic()
+        try:
+            pane, label, full = terminal_snapshot()
+        except ValueError as exc:
+            self.state.update(source_name='Terminal', term_pane='', status=str(exc),
+                              full='', summary='', error='', reply_at=None, awaiting=False)
+            self.save()
+            return
+        self.state.update(source_name=label, term_pane=pane, status='已連接終端 · 點播放讀取畫面',
+                          error='', awaiting=False)
+        if full != self.term_last:
+            self.term_last = full
+            self.state.update(full=full, summary=clean_text(full)[-360:], reply_at=time.time() if full else None)
+        self.save()
 
     def stop(self):
         with self.player_lock:
@@ -293,6 +354,8 @@ class Reader:
     def command(self, request):
         action = request.get('action')
         if action in ('replay', 'send'):
+            if self.config['source'] == 'terminal':
+                self.heartbeat = 0
             self.poll()
         if action == 'status':
             return self.state
@@ -323,7 +386,25 @@ class Reader:
             self.save()
         elif action == 'refresh':
             self.stop()
-            self.bind(latest_session() if self.config['follow_latest'] else self.config['thread'])
+            if self.config['source'] == 'terminal':
+                self.heartbeat = 0
+                self.poll_terminal()
+            else:
+                self.bind(latest_session() if self.config['follow_latest'] else self.config['thread'])
+        elif action == 'source':
+            value = request.get('value')
+            if value not in ('codex', 'terminal'):
+                raise ValueError('請選 Codex 或 Terminal')
+            self.stop()
+            self.config['source'] = value
+            self.state.update(full='', summary='', reply_at=None, source_name='Codex' if value == 'codex' else 'Terminal')
+            atomic_json(CONFIG, self.config)
+            if value == 'terminal':
+                self.heartbeat = 0
+                self.term_last = None
+                self.poll_terminal()
+            else:
+                self.bind(latest_session() if self.config['follow_latest'] else self.config['thread'])
         elif action == 'follow':
             self.config['follow_latest'] = not self.config['follow_latest']
             if self.config['follow_latest']:
@@ -342,11 +423,16 @@ class Reader:
             if any(ord(c) < 32 and c not in '\n\t' for c in text):
                 raise ValueError('文字含有控制字元')
             self.stop()
-            result = subprocess.run(['codex', 'queue', '--thread', self.config['thread'], '--message', text],
-                                    capture_output=True, text=True, timeout=20)
-            if result.returncode:
-                raise ValueError(result.stderr[-500:] or result.stdout[-500:] or '送出失敗')
-            self.state.update(status='已送到這個 Codex 會話的佇列', error='')
+            if self.config['source'] == 'terminal':
+                pane, label, _ = terminal_snapshot()
+                terminal_send(pane, text)
+                self.state.update(status='已送到終端 · '+label, error='')
+            else:
+                result = subprocess.run(['codex', 'queue', '--thread', self.config['thread'], '--message', text],
+                                        capture_output=True, text=True, timeout=20)
+                if result.returncode:
+                    raise ValueError(result.stderr[-500:] or result.stdout[-500:] or '送出失敗')
+                self.state.update(status='已送到這個 Codex 會話的佇列', error='')
             self.save()
         else:
             raise ValueError('未知命令')
@@ -361,7 +447,10 @@ def serve():
         except BlockingIOError:
             return
         reader = Reader()
-        reader.bind(reader.config['thread'])
+        if reader.config['source'] == 'terminal':
+            reader.poll_terminal()
+        elif reader.config['thread']:
+            reader.bind(reader.config['thread'])
         SOCKET.unlink(missing_ok=True)
         with socket.socket(socket.AF_UNIX) as server:
             server.bind(str(SOCKET))
@@ -431,7 +520,7 @@ def ensure():
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=['daemon', 'ensure', 'status', 'replay', 'stop', 'auto', 'bind', 'send', 'test', 'engine', 'refresh', 'follow', 'language'])
+    parser.add_argument('action', choices=['daemon', 'ensure', 'status', 'replay', 'stop', 'auto', 'bind', 'send', 'test', 'engine', 'refresh', 'follow', 'language', 'source'])
     parser.add_argument('value', nargs='?')
     parser.add_argument('--text')
     parser.add_argument('--full', action='store_true')

@@ -66,7 +66,7 @@ class Handler(BaseHTTPRequestHandler):
             tmp.write_text(text)
             os.chmod(tmp, 0o600)
             tmp.replace(CACHE / 'latest.txt')
-            self.reply(200, 'Saved. Return to the launcher and tap Copy latest.')
+            self.reply(200, 'Saved. Return to the launcher and tap Send to target.')
         except (ValueError, KeyError, TypeError, UnicodeError):
             self.reply(400, 'Invalid text')
 

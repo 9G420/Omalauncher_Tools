@@ -1,72 +1,111 @@
-# Omalauncher Tools · Codex Voice & Dictation / 播報與語音輸入
+# Terminal Voice & Dictation for Omalauncher
 
-在 Android Omalauncher 首頁閱讀、播放 Codex 回覆，以及用瀏覽器聽寫文字。
+Read terminal output aloud and dictate text into Codex, Claude, or another command-line program on Android Omalauncher.
 
-## 工具畫面 / Preview
+<details open>
+<summary><strong>English · shown by default</strong></summary>
 
-以下是使用示例文字拍攝的首頁畫面，兩個工具會共用中英文介面設定。點圖片可查看原尺寸。
+## Preview
 
-| Codex 播報 / Codex Voice | 語音輸入 / Dictation |
+These screenshots use example text. The English pair shows a Claude terminal connected through tmux. Tap an image to view it at full size.
+
+| Terminal Voice | Dictation |
 |:---:|:---:|
-| [![Codex 播報首頁截圖](docs/codex-voice.png)](docs/codex-voice.png) | [![語音輸入首頁截圖](docs/dictation.png)](docs/dictation.png) |
+| [![English Terminal Voice widget](docs/codex-voice-en.png)](docs/codex-voice-en.png) | [![English Dictation widget](docs/dictation-en.png)](docs/dictation-en.png) |
 
+## What it does
 
-## 功能 / Features
+- **Codex chat mode:** follows the latest local Codex conversation, displays completed replies and can automatically read a summary aloud. Dictation is sent through Omalauncher's `codex queue` command.
+- **Terminal mode:** reads the visible text of a dedicated tmux pane and sends dictated text to it when you tap **Send to target**. Start Codex, Claude, or another terminal program in that pane. Terminal playback is manual so changing prompts and progress messages are not read aloud repeatedly.
+- Both home-screen widgets and the browser dictation page share an English/Chinese interface switch. The reply or dictated text stays in its original language.
+- The voice widget offers summary/full-screen playback, stop, refresh, source selection, and a detailed view. Online speech converts to playable WAV; offline speech uses espeak-ng.
 
-- 正式回覆完成後，自動刷新摘要與回覆時間；生成中會標示上次內容。
-- 兩個首頁工具及瀏覽器聽寫頁共用中英文介面切換；回覆文字保留原語言。
-- 自動跟隨最近活動的 Codex 對話，也可固定對話。
-- 播放摘要／全文、停止、手動同步、複製全文。
-- 首頁精簡操作；詳情頁固定頂部操作，下方獨立捲動。
-- 線上自然中文語音，失敗時退回本機 espeak-ng；可切換純離線播報。
-- Chrome 語音輸入、中英切換、編輯、複製，以及明確按鈕送入 Codex 佇列。
+## Install
 
-## 安裝 / Install
-
-需要 Omalauncher 的 Arch Linux、支援 OWL 5 的版本，以及至少一個本機 Codex 對話。
-
-1. 下載本倉庫 ZIP 並解壓，或 `git clone https://github.com/WeeboWIZ/Omalauncher_Tools.git`。
-2. 在解壓後的目錄執行：
+Requires Omalauncher with Arch Linux, OWL 5 support, and a working audio output.
 
 ```sh
+git clone https://github.com/WeeboWIZ/Omalauncher_Tools.git
+cd Omalauncher_Tools
 python install.py
 ```
 
-English: Download this repository, run `python install.py` inside it, then tap EN/中 on either widget to switch both interfaces and the dictation page. The installer preserves your own settings and conversation data.
+You can also download the repository ZIP, extract it, and run `python install.py` there. The installer adds two home-screen widgets and installs Python, curl, util-linux, espeak-ng, libpulse, mpg123, tmux, and an isolated Python environment for edge-tts. Use `python install.py --skip-deps` only when these dependencies and the TTS environment already exist.
 
-安裝腳本會安裝 Python、curl、util-linux、espeak-ng、libpulse、mpg123，以及獨立虛擬環境內的 edge-tts。首頁會出現「Codex 播報」與「語音輸入」。Linux 必須已可透過 PulseAudio 播放聲音。
+## Use with Codex or Claude
 
-已有全部依賴時可使用 `python install.py --skip-deps`；這不會建立 TTS 虛擬環境。
-
-## 使用與更新
-
-開啟或恢復一個 Codex 對話，回首頁按「同步」。新正式回覆約半秒內被讀取，切換對話最多約五秒；同步只讀取文字，不會重播歷史回覆。
-
-點「詳情」可播放全文、複製內容、切換聲音、開關自動播報。第一次預設開啟自動播報及線上自然語音。
-
-自動跟隨是依本機會話記錄的最近修改時間判斷，並不是 Android 目前視窗。多個對話同時執行時，可在詳情按「對話：自動跟隨」固定目前對話。重新開啟跟隨即可恢復。
-
-更新：下載新版本，再執行 `python install.py`。保留個人設定、草稿及對話資料，舊程式備份在 `~/.local/share/oma-voice/install-backups/`。更新後若舊播報服務仍在運行，重啟 Linux 一次載入新程式。不要只匯入 `.owl`：它們依賴這個工具的背景程式。
-
-語音輸入需要 Chrome 支援語音辨識及麥克風權限。辨識後停止、編輯並保存，再按「送到目前對話」。送出依賴 Omalauncher 所附 Codex 的 `codex queue`；一般上游 Codex 若無此命令，可改用「複製文字」手動貼上。
-
-## 資料與隱私
-
-本倉庫不包含對話記錄、個人設定、Token、音檔、已下載模型或虛擬環境。安裝後使用者自己的資料位於：
-
-- Codex 來源：`~/.codex/sessions/`（只讀）。
-- 播報設定：`~/.config/omalauncher/voice.json`。
-- 播報快取與最近回覆：`~/.cache/oma-voice/`。
-- 聽寫草稿：瀏覽器 localStorage 及 `~/.cache/oma-speak/`。
-
-**線上自然語音會把需要朗讀的文字傳給 Microsoft Edge TTS 服務**，不需要 API Key，服務可能變更或無法連線。切換「聲音：離線」使用本機 espeak-ng；較大的 Sherpa/Piper 模型不隨分享包分發。瀏覽器聽寫可能使用瀏覽器供應商的線上語音服務。
-
-語音輸入頁只監聽 `127.0.0.1:18763`，保存請求檢查來源與隨機 Token；不對區域網路開放。文字不會在保存時自動送給 Codex。
-
-## 檢查
+The default source is **Codex chat**, preserving existing users' behavior. Open **Details** on the voice widget to select **Terminal / Claude** when you want terminal access. In the terminal window you already use, run:
 
 ```sh
-python -m unittest discover -s tests -v
+tmux new -A -s oma-voice
 ```
 
-安裝後也可執行 `owl-check ~/.config/omalauncher/widgets/46-speak.owl` 查看實際首頁及詳情預覽。
+Then start `claude`, `codex`, or any other CLI inside that tmux session. The voice widget's **Play** button reads the current pane. The Dictation widget's **Send to target** button submits saved text to that pane with Enter. The voice widget includes a button that copies the tmux command. You can leave the tmux session with `Ctrl+B`, then `D`; return with the same command. A terminal window opened outside this tmux session cannot be captured or typed into by this tool.
+
+For Codex chat mode, open or resume a local Codex chat and tap **Sync**. Completed replies update automatically. Sync never replays an old answer. This mode needs Omalauncher's `codex queue` for sending; if your Codex build lacks it, copy the dictated text and paste it yourself.
+
+Dictation uses browser speech recognition. Choose a speech language, tap Start, stop, edit, and save. Then tap **Send to target** on the home screen. The browser must grant microphone permission; Chrome is recommended.
+
+## Update and data
+
+Download or pull the latest version and rerun `python install.py`. It preserves personal settings and draft text and backs up replaced program files under `~/.local/share/oma-voice/install-backups/`. Restart Linux if an older voice service is still running. Importing only the `.owl` files does not install their background programs.
+
+The repository contains no conversation logs, drafts, tokens, audio files, models, or virtual environments. Your Codex logs remain under `~/.codex/sessions/`; voice settings and output under `~/.config/omalauncher/voice.json` and `~/.cache/oma-voice/`; dictation text under `~/.cache/oma-speak/` and browser local storage. Terminal mode reads only the dedicated `oma-voice` tmux session. Online TTS sends the text being spoken to Microsoft Edge TTS. Browser speech recognition may use the browser provider's online service. Select offline speech to use local espeak-ng. The dictation page listens only on `127.0.0.1:18763` and checks an origin and random token before saving text.
+
+Run `python -m unittest discover -s tests -v` to check the package. You can preview a widget after installation with `owl-check ~/.config/omalauncher/widgets/46-speak.owl`.
+
+</details>
+
+<details>
+<summary><strong>中文 · 點擊展開</strong></summary>
+
+## 工具畫面
+
+截圖使用示例文字。中文組展示 Codex 會話模式；英文組展示透過 tmux 連接 Claude。點圖片可查看原尺寸。
+
+| 終端播報 | 語音輸入 |
+|:---:|:---:|
+| [![中文終端播報工具](docs/codex-voice.png)](docs/codex-voice.png) | [![中文語音輸入工具](docs/dictation.png)](docs/dictation.png) |
+
+## 功能
+
+- **Codex 會話模式：** 跟隨本機最近活動的 Codex 對話，顯示已完成回覆，可自動播報摘要。語音輸入經 Omalauncher 的 `codex queue` 送入對話。
+- **終端模式：** 讀取指定 tmux 窗格的可見文字；點「送到目前目標」後將聽寫文字送入該窗格。可以在裡面運行 Codex、Claude 或其他命令列程式。終端畫面採手動播報，避免進度訊息重複朗讀。
+- 兩個首頁工具及瀏覽器聽寫頁共用中英文介面切換；回覆和聽寫內容保留原語言。
+- 播報工具可播放摘要或全文、停止、同步、選擇來源及查看詳情。線上語音會轉成可播放的 WAV；離線語音使用 espeak-ng。
+
+## 安裝
+
+需要 Omalauncher 的 Arch Linux、OWL 5 支援和可用的音訊輸出。
+
+```sh
+git clone https://github.com/WeeboWIZ/Omalauncher_Tools.git
+cd Omalauncher_Tools
+python install.py
+```
+
+也可下載倉庫 ZIP 並解壓，在目錄內執行 `python install.py`。安裝程式會加入兩個首頁工具，並安裝 Python、curl、util-linux、espeak-ng、libpulse、mpg123、tmux 和 edge-tts 的獨立 Python 環境。只有依賴和語音環境都已具備時才使用 `python install.py --skip-deps`。
+
+## 使用 Codex 或 Claude
+
+預設是 **Codex 會話**，延續已安裝使用者的行為。想操作終端時，在播報工具的「詳情」選 **終端 / Claude**，然後在你原本使用的終端視窗輸入：
+
+```sh
+tmux new -A -s oma-voice
+```
+
+進入後在該 tmux 工作階段啟動 `claude`、`codex` 或其他命令列程式。「播放」會朗讀目前窗格畫面；語音輸入首頁的「送到目前目標」會把保存的文字送到該窗格並按 Enter。播報工具提供「複製終端連接命令」按鈕。按 `Ctrl+B`，再按 `D` 可暫時離開，重新輸入相同命令即可返回。沒有進入這個 tmux 工作階段的普通終端視窗，工具無法直接讀取或輸入。
+
+使用 Codex 會話模式時，開啟或恢復本機對話，按「同步」。正式回覆完成後自動更新；同步不會重播歷史回覆。送入對話需 Omalauncher 的 `codex queue`；若使用的 Codex 沒有該命令，可複製聽寫文字再手動貼上。
+
+語音輸入使用瀏覽器語音辨識。選好語音語言，開始、停止、修改並保存，最後回首頁按「送到目前目標」。瀏覽器需授予麥克風權限，建議使用 Chrome。
+
+## 更新與資料
+
+下載最新版本並重新執行 `python install.py`。安裝會保留個人設定與草稿，並把舊程式備份到 `~/.local/share/oma-voice/install-backups/`。若舊播報服務仍在運行，重啟 Linux 載入新程式。只匯入 `.owl` 檔不會安裝背景程式。
+
+倉庫不包含對話紀錄、草稿、Token、音檔、模型或虛擬環境。Codex 記錄位於 `~/.codex/sessions/`；播報設定和快取位於 `~/.config/omalauncher/voice.json`、`~/.cache/oma-voice/`；聽寫文字位於 `~/.cache/oma-speak/` 和瀏覽器本機儲存。終端模式只讀取指定的 `oma-voice` tmux 工作階段。線上語音會把朗讀文字傳給 Microsoft Edge TTS；瀏覽器語音辨識也可能使用供應商的線上服務。選擇離線語音則使用本機 espeak-ng。聽寫頁只監聽 `127.0.0.1:18763`，保存時檢查來源與隨機 Token。
+
+執行 `python -m unittest discover -s tests -v` 可檢查分享包；安裝後以 `owl-check ~/.config/omalauncher/widgets/46-speak.owl` 預覽首頁和詳情頁。
+
+</details>

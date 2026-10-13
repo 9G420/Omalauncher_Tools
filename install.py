@@ -18,7 +18,7 @@ def main():
     if not args.skip_deps:
         if not shutil.which('pacman'):
             sys.exit('Requires Omalauncher Arch Linux. Install Python, curl, util-linux, espeak-ng, libpulse first, then --skip-deps.')
-        cmd = ['pacman', '-S', '--needed', '--noconfirm', 'python', 'curl', 'util-linux', 'espeak-ng', 'libpulse', 'mpg123']
+        cmd = ['pacman', '-S', '--needed', '--noconfirm', 'python', 'curl', 'util-linux', 'espeak-ng', 'libpulse', 'mpg123', 'tmux']
         if os.geteuid() != 0:
             cmd.insert(0, 'sudo')
         subprocess.run(cmd, check=True)
@@ -51,10 +51,10 @@ def main():
         quoted = shlex.quote(str(home))
         escaped = json.dumps(quoted, ensure_ascii=False)[1:-1]
         write('.config/omalauncher/widgets/'+file.name, file.read_text().replace('__HOME__', escaped).encode())
-    print('Installed Codex 播報 and 語音輸入. Personal settings and conversation data were preserved.')
+    print('Installed 終端播報 and 語音輸入. Personal settings and conversation data were preserved.')
     print('Updated files backed up at:', backup)
     print('After updating an already-running version, restart Linux once to reload its voice service.')
-    print('Start or resume a Codex conversation, then tap 同步 on the home-screen widget.')
+    print('Open Details to choose Codex chat or a tmux terminal, then tap Sync.')
     print('Online voice sends reply text to Microsoft Edge TTS. Choose 聲音：離線 for local basic speech.')
     checker = shutil.which('owl-check')
     if checker and not args.skip_deps:

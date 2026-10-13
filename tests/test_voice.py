@@ -6,6 +6,8 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import time
+from unittest import mock
 import uuid
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -51,6 +53,26 @@ class VoiceTests(unittest.TestCase):
                 self.assertEqual(reader.state['full'],'Fresh completion')
         finally:
             voice.CACHE, voice.CONFIG, voice.SESSIONS = previous
+
+    def test_tmux_capture_and_send_in_isolated_session(self):
+        with tempfile.TemporaryDirectory() as directory:
+            socket_name = 'oma-voice-test-' + uuid.uuid4().hex[:10]
+            original_run = subprocess.run
+            try:
+                original_run(['tmux','-L',socket_name,'-f','/dev/null','new-session','-d','-s','oma-voice','bash','--noprofile','--norc'],check=True)
+                def isolated(args, **kwargs):
+                    if args[0] == 'tmux':
+                        args = ['tmux','-L',socket_name,*args[1:]]
+                    return original_run(args, **kwargs)
+                with mock.patch.object(voice.subprocess,'run',side_effect=isolated):
+                    pane,label,_=voice.terminal_snapshot()
+                    self.assertRegex(pane,r'^%[0-9]+$')
+                    voice.terminal_send(pane,'printf voice_test_ok')
+                    time.sleep(.4)
+                    _,_,screen=voice.terminal_snapshot()
+                    self.assertIn('voice_test_ok',screen)
+            finally:
+                original_run(['tmux','-L',socket_name,'kill-server'],check=False,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
 
     def test_ignores_nonfinal_events(self):
         self.assertIsNone(voice.completed_reply({'type':'event_msg','payload':{'type':'agent_message','message':'interim'}}))
