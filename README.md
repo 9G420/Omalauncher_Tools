@@ -2,6 +2,15 @@
 
 在 Android Omalauncher 首頁閱讀、播放 Codex 回覆，以及用瀏覽器聽寫文字。
 
+## 工具畫面 / Preview
+
+以下是使用示例文字拍攝的首頁畫面，兩個工具會共用中英文介面設定。點圖片可查看原尺寸。
+
+| Codex 播報 / Codex Voice | 語音輸入 / Dictation |
+|:---:|:---:|
+| [![Codex 播報首頁截圖](docs/codex-voice.png)](docs/codex-voice.png) | [![語音輸入首頁截圖](docs/dictation.png)](docs/dictation.png) |
+
+
 ## 功能 / Features
 
 - 正式回覆完成後，自動刷新摘要與回覆時間；生成中會標示上次內容。
@@ -61,9 +70,3 @@ python -m unittest discover -s tests -v
 ```
 
 安裝後也可執行 `owl-check ~/.config/omalauncher/widgets/46-speak.owl` 查看實際首頁及詳情預覽。
-
-## 分享
-
-目前最完整的方式是分享整個倉庫網址或 ZIP，讓對方執行安裝腳本。Omalauncher 小工具商店可作為後續入口，但單獨發布 OWL 檔不足以安裝背景服務。
-
-MIT License。第三方依賴保留各自的授權與服務條款。
