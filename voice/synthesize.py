@@ -1,4 +1,4 @@
-"""Edge TTS without API keys; local Piper/Sherpa fallback. Reads text on stdin."""
+'''Edge TTS without API keys; local Piper/Sherpa fallback. Reads text on stdin.'''
 import asyncio
 import json
 import os

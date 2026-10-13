@@ -1,0 +1,976 @@
+widget "終端播報" {
+  page: 1
+  order: 6
+  size: 3x4
+  minSize: 3x4
+  meta { owl: 5; description: "朗讀 Codex 回覆或 tmux 終端畫面；支援 Codex、Claude 與一般終端程式。"; version: "3.1"; license: "MIT"; category: "productivity" }
+  requires { pacman: ["python", "espeak-ng", "libpulse", "mpg123", "tmux", "curl", "util-linux"] }
+  source uiLanguage = file("~/.config/omalauncher/voice-ui-language")
+  let zh = uiLanguage != "en"
+  source installed = file("~/.local/share/oma-voice/store-version")
+  source setupState = file("~/.cache/oma-voice/setup-state")
+  let ready = installed == "3.1-af2f8b7a"
+  let setupText = setupState == "installing" && !ready ? (zh ? "安裝中，約需一分鐘…" : "Installing, about a minute…") : setupState == "failed" ? (zh ? "安裝失敗，請查看 ~/.cache/oma-voice/setup.log" : "Setup failed: see ~/.cache/oma-voice/setup.log") : installed == "" ? (zh ? "首次使用：把播報與聽寫程式寫入 ~/.local，並下載 edge-tts 線上語音。" : "First use: writes the voice and dictation programs to ~/.local and downloads edge-tts for online speech.") : (zh ? "程式有新版，更新後才能使用。" : "The programs have an update; install it to continue.")
+  source service = cmd("if [ -x ~/.local/bin/oma-voice ]; then ~/.local/bin/oma-voice ensure; fi") every 30s
+  source voice = file("~/.cache/oma-voice/state.json") json
+  source now = clock every 5s
+  let offline = voice.checked_at == null || now - voice.checked_at > 30
+  let replyTime = voice.reply_at == null ? (zh ? "尚無可讀內容" : "Nothing to read yet") : (zh ? "回覆 ${fmtTime(voice.reply_at, 'MM-dd HH:mm')}" : "Reply ${fmtTime(voice.reply_at, 'MM-dd HH:mm')}")
+  let statusText = offline ? (zh ? "服務未更新 · 點同步重試" : "Service offline · tap Sync") : voice.awaiting ? (zh ? "正在回覆 · 下方為上次內容" : "Working · previous reply below") : (zh ? voice.status : voice.status_en) ?? (zh ? "連接中…" : "Connecting…")
+  onTap: screen()
+  Column {
+    fill: true
+    gap: 6
+    if !ready {
+      Text { text: zh ? "終端播報" : "TERMINAL VOICE"; style: label; color: accent }
+      Text { text: setupText; style: small; maxLines: 8; weight: 1; color: setupState == "failed" ? red : muted }
+      Button { fill: width; height: 40; text: installed == "" ? (zh ? "安裝" : "Set up") : (zh ? "更新" : "Update"); onTap: run("""
+# Writes the voice and dictation programs kept in this widget into ~/.local, then
+# makes a Python environment for edge-tts (online speech). Log: ~/.cache/oma-voice/setup.log
+set -u
+umask 077
+share="$HOME/.local/share"
+cache="$HOME/.cache/oma-voice"
+mkdir -p "$share/oma-voice" "$share/oma-speak" "$HOME/.local/bin" "$cache"
+exec >>"$cache/setup.log" 2>&1
+say() { printf '%s' "$1" > "$cache/setup-state"; }
+# Written beside the old file and moved over it, so a running copy is never half written.
+put() { cat > "$1.new" && mv -f "$1.new" "$1" || { say failed; exit 1; }; }
+say installing
+put "$HOME/.local/share/oma-voice/oma_voice.py" <<'OMA_VOICE_FILE_0_END'
+#!/usr/bin/env python3
+'''Voice reader and dictation bridge for Codex logs or a tmux terminal.'''
+import argparse
+import datetime
+import fcntl
+import json
+import os
+from pathlib import Path
+import re
+import select
+import shutil
+import socket
+import subprocess
+import sys
+import threading
+import time
+import uuid
+
+TRANSLATIONS = {'已連接，等待回覆': 'Connected, waiting for reply', '已同步最近回覆': 'Latest reply synced', 'Codex 正在回覆…': 'Codex is working…', '收到新回覆': 'New reply received', '已停止': 'Stopped', '正在播放': 'Preparing audio', '播放完成': 'Playback complete', '播放失敗': 'Playback failed', '自動播報已開啟': 'Auto-read enabled', '自動播報已關閉': 'Auto-read disabled', '已切換線上自然語音': 'Online voice selected', '已切換離線神經語音': 'Offline voice selected', '已送到這個 Codex 會話的佇列': 'Sent to this Codex chat queue', '已連接終端 · 點播放讀取畫面': 'Terminal connected · tap Play to read screen', '請在現有終端執行 tmux new -A -s oma-voice': 'Run tmux new -A -s oma-voice in your existing terminal', '等待會話記錄': 'Waiting for chat log', '還沒有可播放的回覆': 'No reply available to play', '找不到 Codex 會話': 'No local Codex chat found', '找不到指定會話': 'Chat not found', '需要 espeak-ng 和 paplay': 'espeak-ng and paplay are required', '播放逾時': 'Playback timed out', '請先輸入內容（最多 16000 字）': 'Enter text first (maximum 16000 characters)', '文字含有控制字元': 'Text contains control characters', '送出失敗': 'Could not send text', '未知命令': 'Unknown command', '請選 online 或 offline': 'Choose online or offline', '請先開始語音輸入，停止後保存。': 'Start dictation, stop and save first.'}
+
+def english(text):
+    if text.startswith('正在播放 · '):
+        return 'Playing · ' + {'離線神經語音':'offline neural','離線基本語音':'offline basic','自然語音（線上）':'online natural','語音':'audio'}.get(text.split(' · ',1)[1],text.split(' · ',1)[1])
+    return TRANSLATIONS.get(text, text)
+
+HOME = Path.home()
+CACHE = HOME / '.cache/oma-voice'
+SOCKET = CACHE / 'control.sock'
+CONFIG = HOME / '.config/omalauncher/voice.json'
+SESSIONS = HOME / '.codex/sessions'
+TMUX_SESSION = 'oma-voice'
+
+
+def atomic_json(path, value):
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    tmp = path.with_name(path.name + '.' + uuid.uuid4().hex + '.tmp')
+    tmp.write_text(json.dumps(value, ensure_ascii=False))
+    tmp.chmod(0o600)
+    tmp.replace(path)
+
+
+def read_json(path, default=None):
+    try:
+        return json.loads(path.read_text())
+    except (OSError, ValueError):
+        return default
+
+
+def clean_text(text):
+    text = re.sub(r'```.*?```', '（程式碼略過）', text, flags=re.S)
+    text = re.sub(r'!?\[([^\]]+)\]\([^)]*\)', r'\1', text)
+    text = re.sub(r'https?://\S+', '連結略過', text)
+    text = re.sub(r'(?m)^\s*(?:#{1,6}\s+|[-*+]\s+|\d+[.)]\s+|>\s*)', '', text)
+    text = text.replace('`', '').replace('**', '').replace('__', '')
+    return ''.join(c for c in text if c in '\n\t' or (ord(c) >= 32 and ord(c) != 127)).strip()
+
+
+def summarize(text, limit=360):
+    '''Extract sentences verbatim; retain an explicit failure/limitation if present.'''
+    text = clean_text(text)
+    if len(text) <= limit:
+        return text
+    sentences = [s.strip() for s in re.split(r'(?<=[。！？.!?])\s*|\n+', text) if s.strip()]
+    selected = []
+    important = re.compile(r'未完成|尚未|無法|不能|失敗|限制|需要你|待.*確認|未.*驗證|未.*測試|not tested|failed|unable|cannot|limitation', re.I)
+    warning = next((s for s in sentences if important.search(s)), '')
+    # Reserve room for a caveat even when it appears at the end of a long answer.
+    budget = limit - min(len(warning), limit // 2) - (8 if warning else 0)
+    used = 0
+    for s in sentences:
+        if s == warning:
+            continue
+        if used + len(s) > budget:
+            if not selected:
+                selected.append(s[:budget].rstrip() + '…')
+            break
+        selected.append(s)
+        used += len(s) + 1
+    if warning:
+        selected.append(warning[:limit // 2])
+    return '回覆節錄。' + ' '.join(selected) + ' 完整內容可選全文播放。'
+
+
+def completed_reply(event):
+    '''Ignore commentary, tool output, subagent logs and aborted turns.'''
+    if event.get('type') != 'event_msg':
+        return None
+    payload = event.get('payload', {})
+    if payload.get('type') != 'task_complete':
+        return None
+    text = payload.get('last_agent_message')
+    if not isinstance(text, str) or not text.strip():
+        return None
+    return payload.get('turn_id') or payload.get('root_turn_id') or event.get('timestamp'), text
+
+
+def find_session(thread):
+    # Session IDs are data, never shell expressions or path components.
+    thread = str(uuid.UUID(thread))
+    return next(SESSIONS.rglob('*' + thread + '.jsonl'), None)
+
+
+def latest_session():
+    files = list(SESSIONS.rglob('*.jsonl'))
+    if not files:
+        raise ValueError('找不到 Codex 會話')
+    path = max(files, key=lambda p: p.stat().st_mtime)
+    with path.open() as f:
+        meta = json.loads(f.readline()).get('payload', {})
+    return str(uuid.UUID(meta.get('id') or meta.get('session_id')))
+
+
+def terminal_snapshot():
+    '''Read only the current pane of the dedicated, user-entered tmux session.'''
+    if not shutil.which('tmux'):
+        raise ValueError('需要 tmux / tmux is required')
+    pane = subprocess.run(['tmux', 'display-message', '-p', '-t', TMUX_SESSION, '#{pane_id}'],
+                          capture_output=True, text=True, timeout=3)
+    if pane.returncode or not re.fullmatch(r'%[0-9]+', pane.stdout.strip()):
+        raise ValueError('請在現有終端執行 tmux new -A -s oma-voice')
+    pane_id = pane.stdout.strip()
+    command = subprocess.run(['tmux', 'display-message', '-p', '-t', pane_id, '#{pane_current_command}'],
+                             capture_output=True, text=True, timeout=3).stdout.strip()
+    output = subprocess.run(['tmux', 'capture-pane', '-p', '-t', pane_id, '-S', '-80'],
+                            capture_output=True, text=True, timeout=3)
+    if output.returncode:
+        raise ValueError('無法讀取終端畫面')
+    clean = ''.join(ch for ch in output.stdout if ch in '\n\t' or ord(ch) >= 32)
+    clean = '\n'.join(line.rstrip() for line in clean.splitlines()).strip()
+    label = 'Claude' if 'claude' in command.lower() else 'Codex' if 'codex' in command.lower() else (command or 'Terminal')
+    return pane_id, label, clean[-6000:]
+
+
+def terminal_send(pane_id, text):
+    '''Submit one explicit user action to the already selected tmux pane.'''
+    if not re.fullmatch(r'%[0-9]+', pane_id):
+        raise ValueError('無效的終端窗格')
+    text = ' '.join(text.splitlines()).strip()
+    for keys in (['-l', text], ['Enter']):
+        result = subprocess.run(['tmux', 'send-keys', '-t', pane_id, *keys],
+                                capture_output=True, text=True, timeout=5)
+        if result.returncode:
+            raise ValueError(result.stderr.strip() or '終端輸入失敗')
+
+
+class Reader:
+    def __init__(self):
+        self.config = read_json(CONFIG, {})
+        self.config.setdefault('auto', True)
+        self.config.setdefault('mode', 'summary')
+        self.config.setdefault('language', 'cmn')
+        self.config.setdefault('rate', 175)
+        self.config.setdefault('engine', 'online')
+        if not self.config.get('thread'):
+            try:
+                self.config['thread'] = latest_session()
+            except ValueError:
+                self.config['thread'] = None
+        self.config.setdefault('follow_latest', True)
+        self.config.setdefault('source', 'codex')
+        self.term_last = None
+        self.checked_session = 0
+        self.heartbeat = 0
+        atomic_json(CONFIG, self.config)
+        self.state = read_json(CACHE / 'state.json', {})
+        self.state.update(status='已連接，等待回覆', playing=False, error='')
+        self.process = None
+        self.player_lock = threading.RLock()
+        self.generation = 0
+        self.path = None
+        self.offset = 0
+        self.pending = b''
+        self.last_turn = None
+        self.save()
+
+    def save(self):
+        self.state["status_en"] = english(self.state.get("status", ""))
+        self.state["error_en"] = english(self.state.get("error", ""))
+        stamp = self.state.get('reply_at')
+        if isinstance(stamp, str):
+            try:
+                self.state['reply_at'] = datetime.datetime.fromisoformat(stamp.replace('Z', '+00:00')).timestamp()
+            except ValueError:
+                self.state['reply_at'] = None
+        self.state.update(auto=self.config['auto'], mode=self.config['mode'], thread=self.config['thread'], engine=self.config['engine'], follow_latest=self.config['follow_latest'], source=self.config['source'], source_name=self.state.get('source_name','Codex'), checked_at=time.time())
+        atomic_json(CACHE / 'state.json', self.state)
+
+    def bind(self, thread):
+        path = find_session(thread)
+        if path is None:
+            raise ValueError('找不到指定會話')
+        self.config['thread'] = str(uuid.UUID(thread))
+        self.path = path
+        # Seed replay, but never automatically speak historical answers on startup.
+        self.pending = b''
+        self.last_turn = None
+        self.state.update(full='', summary='', last_turn='', reply_at=None, awaiting=False, status='已連接，等待回覆')
+        with path.open('rb') as f:
+            for line in f:
+                try:
+                    event = json.loads(line)
+                    reply = completed_reply(event)
+                    kind = event.get('payload', {}).get('type')
+                    if kind == 'task_started':
+                        self.state['awaiting'] = True
+                    elif kind in ('task_complete', 'turn_aborted'):
+                        self.state['awaiting'] = False
+                except ValueError:
+                    continue
+                if reply:
+                    self.last_turn, full = reply
+                    self.state.update(full=full, summary=summarize(full), last_turn=self.last_turn, reply_at=event.get('timestamp'))
+            self.offset = f.tell()
+        self.state['status'] = 'Codex 正在回覆…' if self.state['awaiting'] else ('已同步最近回覆' if self.state['full'] else '已連接，等待回覆')
+        atomic_json(CONFIG, self.config)
+        self.save()
+
+    def poll(self):
+        if self.config['source'] == 'terminal':
+            return self.poll_terminal()
+        if not self.config['thread']:
+            self.config['thread'] = latest_session()
+        if time.monotonic() - self.checked_session >= 5:
+            self.checked_session = time.monotonic()
+            if self.config['follow_latest']:
+                thread = latest_session()
+                if thread != self.config['thread']:
+                    self.stop()
+                    self.bind(thread)
+        if time.monotonic() - self.heartbeat >= 10:
+            self.heartbeat = time.monotonic()
+            self.save()
+        if self.path is None:
+            self.bind(self.config['thread'])
+        if self.path.stat().st_size < self.offset:
+            self.bind(self.config['thread'])
+        with self.path.open('rb') as f:
+            f.seek(self.offset)
+            data = f.read(4 * 1024 * 1024)
+            self.offset = f.tell()
+        lines = (self.pending + data).split(b'\n')
+        self.pending = lines.pop()
+        for line in lines:
+            try:
+                event = json.loads(line)
+                reply = completed_reply(event)
+                kind = event.get('payload', {}).get('type')
+                if kind == 'task_started':
+                    self.state.update(awaiting=True, status='Codex 正在回覆…', error='')
+                    self.save()
+                elif kind in ('task_complete', 'turn_aborted'):
+                    self.state['awaiting'] = False
+            except (ValueError, UnicodeError):
+                continue
+            if not reply or reply[0] == self.last_turn:
+                continue
+            self.last_turn, full = reply
+            self.state.update(full=full, summary=summarize(full), last_turn=self.last_turn,
+                              status='收到新回覆', error='', awaiting=False, reply_at=event.get('timestamp'))
+            self.save()
+            if self.config['auto']:
+                self.play(self.state[self.config['mode']])
+
+    def poll_terminal(self):
+        if time.monotonic() - self.heartbeat < 2:
+            return
+        self.heartbeat = time.monotonic()
+        try:
+            pane, label, full = terminal_snapshot()
+        except ValueError as exc:
+            self.state.update(source_name='Terminal', term_pane='', status=str(exc),
+                              full='', summary='', error='', reply_at=None, awaiting=False)
+            self.save()
+            return
+        self.state.update(source_name=label, term_pane=pane, status='已連接終端 · 點播放讀取畫面',
+                          error='', awaiting=False)
+        if full != self.term_last:
+            self.term_last = full
+            self.state.update(full=full, summary=clean_text(full)[-360:], reply_at=time.time() if full else None)
+        self.save()
+
+    def stop(self):
+        with self.player_lock:
+            self.generation += 1
+            if self.process is not None:
+                self.process.terminate()
+                try:
+                    self.process.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    self.process.kill()
+                    self.process.wait()
+                self.process = None
+            self.state.update(playing=False, status='已停止')
+            self.save()
+
+    def play(self, text):
+        if not text.strip():
+            raise ValueError('還沒有可播放的回覆')
+        self.stop()
+        with self.player_lock:
+            generation = self.generation
+            self.state.update(playing=True, status='正在播放', error='')
+            self.save()
+
+        def worker():
+            wav = CACHE / ('speech-' + uuid.uuid4().hex + '.wav')
+            try:
+                with self.player_lock:
+                    if generation != self.generation:
+                        return
+                if not shutil.which('espeak-ng') or not shutil.which('paplay'):
+                    raise ValueError('需要 espeak-ng 和 paplay')
+                commands = [
+                    ([str(Path(__file__).parent / 'venv/bin/python'),
+                      str(Path(__file__).parent / 'synthesize.py'), str(wav)], clean_text(text).encode()),
+                    (['paplay', str(wav)], None),
+                ]
+                for args, data in commands:
+                    if data is None:
+                        with self.player_lock:
+                            if generation == self.generation:
+                                backend = Path(str(wav) + '.backend')
+                                self.state['status'] = '正在播放 · ' + (backend.read_text() if backend.exists() else '語音')
+                                self.save()
+                    with self.player_lock:
+                        if generation != self.generation:
+                            return
+                        proc = subprocess.Popen(args, stdin=subprocess.PIPE if data else subprocess.DEVNULL,
+                                                stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+                        self.process = proc
+                    try:
+                        _, err = proc.communicate(data, timeout=300)
+                    except subprocess.TimeoutExpired:
+                        proc.kill()
+                        proc.communicate()
+                        raise ValueError('播放逾時')
+                    if proc.returncode and generation == self.generation:
+                        raise ValueError(err.decode(errors='replace')[-400:] or '播放失敗')
+                with self.player_lock:
+                    if generation == self.generation:
+                        self.process = None
+                        self.state.update(playing=False, status='播放完成')
+                        self.save()
+            except Exception as exc:
+                with self.player_lock:
+                    if generation == self.generation:
+                        self.state.update(playing=False, status='播放失敗', error=str(exc))
+                        self.save()
+            finally:
+                wav.unlink(missing_ok=True)
+                Path(str(wav) + '.backend').unlink(missing_ok=True)
+        threading.Thread(target=worker, daemon=True).start()
+
+    def command(self, request):
+        action = request.get('action')
+        if action in ('replay', 'send'):
+            if self.config['source'] == 'terminal':
+                self.heartbeat = 0
+            self.poll()
+        if action == 'status':
+            return self.state
+        if action == 'replay':
+            self.play(self.state.get('full' if request.get('full') else 'summary', ''))
+        elif action == 'test':
+            self.play('語音播報已連接。之後會自動播放這個對話的回覆摘要。')
+        elif action == 'stop':
+            self.stop()
+        elif action == 'auto':
+            value = request.get('value', 'toggle')
+            self.config['auto'] = not self.config['auto'] if value == 'toggle' else value == 'on'
+            if not self.config['auto']:
+                self.stop()
+            self.state['status'] = '自動播報已開啟' if self.config['auto'] else '自動播報已關閉'
+            atomic_json(CONFIG, self.config)
+            self.save()
+        elif action == 'engine':
+            value = request.get('value', 'toggle')
+            if value == 'toggle':
+                value = 'offline' if self.config['engine'] == 'online' else 'online'
+            if value not in ('online', 'offline'):
+                raise ValueError('請選 online 或 offline')
+            self.stop()
+            self.config['engine'] = value
+            atomic_json(CONFIG, self.config)
+            self.state['status'] = '已切換線上自然語音' if value == 'online' else '已切換離線神經語音'
+            self.save()
+        elif action == 'refresh':
+            self.stop()
+            if self.config['source'] == 'terminal':
+                self.heartbeat = 0
+                self.poll_terminal()
+            else:
+                self.bind(latest_session() if self.config['follow_latest'] else self.config['thread'])
+        elif action == 'source':
+            value = request.get('value')
+            if value not in ('codex', 'terminal'):
+                raise ValueError('請選 Codex 或 Terminal')
+            self.stop()
+            self.config['source'] = value
+            self.state.update(full='', summary='', reply_at=None, source_name='Codex' if value == 'codex' else 'Terminal')
+            atomic_json(CONFIG, self.config)
+            if value == 'terminal':
+                self.heartbeat = 0
+                self.term_last = None
+                self.poll_terminal()
+            else:
+                self.bind(latest_session() if self.config['follow_latest'] else self.config['thread'])
+        elif action == 'follow':
+            self.config['follow_latest'] = not self.config['follow_latest']
+            if self.config['follow_latest']:
+                self.stop()
+                self.bind(latest_session())
+            atomic_json(CONFIG, self.config)
+            self.save()
+        elif action == 'bind':
+            self.stop()
+            self.config['follow_latest'] = False
+            self.bind(request['thread'])
+        elif action == 'send':
+            text = request.get('text', '').strip()
+            if not text or len(text) > 16000:
+                raise ValueError('請先輸入內容（最多 16000 字）')
+            if any(ord(c) < 32 and c not in '\n\t' for c in text):
+                raise ValueError('文字含有控制字元')
+            self.stop()
+            if self.config['source'] == 'terminal':
+                pane, label, _ = terminal_snapshot()
+                terminal_send(pane, text)
+                self.state.update(status='已送到終端 · '+label, error='')
+            else:
+                result = subprocess.run(['codex', 'queue', '--thread', self.config['thread'], '--message', text],
+                                        capture_output=True, text=True, timeout=20)
+                if result.returncode:
+                    raise ValueError(result.stderr[-500:] or result.stdout[-500:] or '送出失敗')
+                self.state.update(status='已送到這個 Codex 會話的佇列', error='')
+            self.save()
+        else:
+            raise ValueError('未知命令')
+        return {'ok': True, 'status': self.state['status']}
+
+
+def serve():
+    CACHE.mkdir(parents=True, exist_ok=True, mode=0o700)
+    with (CACHE / 'daemon.lock').open('w') as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return
+        reader = Reader()
+        if reader.config['source'] == 'terminal':
+            reader.poll_terminal()
+        elif reader.config['thread']:
+            reader.bind(reader.config['thread'])
+        SOCKET.unlink(missing_ok=True)
+        with socket.socket(socket.AF_UNIX) as server:
+            server.bind(str(SOCKET))
+            SOCKET.chmod(0o600)
+            server.listen(4)
+            while True:
+                try:
+                    reader.poll()
+                except (OSError, ValueError) as exc:
+                    reader.state.update(status='等待會話記錄', error=str(exc))
+                    reader.save()
+                if not select.select([server], [], [], 0.5)[0]:
+                    continue
+                conn, _ = server.accept()
+                with conn:
+                    conn.settimeout(5)
+                    try:
+                        data = b''
+                        while b'\n' not in data and len(data) <= 70000:
+                            part = conn.recv(8192)
+                            if not part:
+                                break
+                            data += part
+                        if len(data) > 70000:
+                            raise ValueError('請求太大')
+                        response = reader.command(json.loads(data))
+                    except Exception as exc:
+                        response = {'ok': False, 'error': str(exc), 'error_en': english(str(exc))}
+                    try:
+                        conn.sendall((json.dumps(response, ensure_ascii=False) + '\n').encode())
+                    except OSError:
+                        pass
+
+
+def request(value):
+    with socket.socket(socket.AF_UNIX) as client:
+        client.settimeout(25)
+        client.connect(str(SOCKET))
+        client.sendall((json.dumps(value, ensure_ascii=False) + '\n').encode())
+        data = b''
+        while b'\n' not in data:
+            part = client.recv(8192)
+            if not part:
+                break
+            data += part
+        return json.loads(data)
+
+
+def ensure():
+    try:
+        request({'action': 'status'})
+        return
+    except (OSError, ValueError):
+        pass
+    CACHE.mkdir(parents=True, exist_ok=True, mode=0o700)
+    with (CACHE / 'daemon.log').open('ab') as log:
+        subprocess.Popen([sys.executable, str(Path(__file__).resolve()), 'daemon'],
+                         stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True)
+    for _ in range(30):
+        try:
+            request({'action': 'status'})
+            return
+        except (OSError, ValueError):
+            time.sleep(0.1)
+    raise ValueError('語音服務未啟動，請查看 ~/.cache/oma-voice/daemon.log')
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('action', choices=['daemon', 'ensure', 'status', 'replay', 'stop', 'auto', 'bind', 'send', 'test', 'engine', 'refresh', 'follow', 'language', 'source'])
+    parser.add_argument('value', nargs='?')
+    parser.add_argument('--text')
+    parser.add_argument('--full', action='store_true')
+    parser.add_argument('--json', action='store_true')
+    args = parser.parse_args()
+    if args.action == 'language':
+        if args.value not in ('zh', 'en'):
+            raise ValueError('Choose zh or en')
+        path = HOME / '.config/omalauncher/voice-ui-language'
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temp = path.with_name(path.name + '.' + uuid.uuid4().hex + '.tmp')
+        temp.write_text(args.value)
+        temp.chmod(0o600)
+        temp.replace(path)
+        return
+    if args.action == 'daemon':
+        serve()
+        return
+    ensure()
+    if args.action == 'ensure':
+        return
+    result = request({'action': args.action, 'value': args.value or 'toggle',
+                      'thread': args.value, 'text': args.text or '', 'full': args.full})
+    result['request_id'] = uuid.uuid4().hex
+    print(json.dumps(result, ensure_ascii=False) if args.action == 'status' or args.json else
+          result.get('error') or result.get('status', '完成'))
+    if result.get('ok') is False:
+        sys.exit(1)
+
+
+if __name__ == '__main__':
+    try:
+        main()
+    except (OSError, ValueError) as error:
+        print(str(error), file=sys.stderr)
+        sys.exit(1)
+OMA_VOICE_FILE_0_END
+put "$HOME/.local/share/oma-voice/synthesize.py" <<'OMA_VOICE_FILE_1_END'
+'''Edge TTS without API keys; local Piper/Sherpa fallback. Reads text on stdin.'''
+import asyncio
+import json
+import os
+import subprocess
+import shutil
+from pathlib import Path
+import sys
+
+ROOT = Path(__file__).parent
+
+def offline(text, output):
+    runtime = ROOT / 'tts/sherpa-onnx-v1.13.8-linux-aarch64-shared-cpu/bin/sherpa-onnx-offline-tts'
+    model = ROOT / 'tts/vits-piper-zh_CN-huayan-medium'
+    if runtime.exists() and (model / 'zh_CN-huayan-medium.onnx').exists():
+        Path(str(output)+'.backend').write_text('離線神經語音')
+        os.execv(str(runtime), [str(runtime), '--vits-model='+str(model/'zh_CN-huayan-medium.onnx'),
+                 '--vits-tokens='+str(model/'tokens.txt'), '--vits-data-dir='+str(model/'espeak-ng-data'),
+                 '--num-threads=2', '--output-filename='+str(output), '--', text])
+    Path(str(output)+'.backend').write_text('離線基本語音')
+    os.execvp('espeak-ng', ['espeak-ng', '-v', 'cmn', '-s', '175', '-w', str(output), '--', text])
+
+async def online(text, output):
+    import edge_tts
+    mp3 = output.with_suffix('.mp3')
+    try:
+        voice = 'zh-CN-XiaoxiaoNeural' if any('\u3400' <= c <= '\u9fff' for c in text) else 'en-US-AriaNeural'
+        await asyncio.wait_for(edge_tts.Communicate(text, voice=voice, rate='-5%').save(str(mp3)), timeout=25)
+        if not shutil.which('mpg123'):
+            raise RuntimeError('mpg123 is required for online speech')
+        subprocess.run(['mpg123', '-q', '-w', str(output), str(mp3)], check=True, timeout=30)
+        Path(str(output)+'.backend').write_text('自然語音（線上）')
+    finally:
+        mp3.unlink(missing_ok=True)
+
+if __name__ == '__main__':
+    output = Path(sys.argv[1])
+    text = sys.stdin.read().strip()
+    if not text:
+        raise SystemExit('沒有可播放的文字')
+    config = json.loads((Path.home()/'.config/omalauncher/voice.json').read_text())
+    if config.get('engine') != 'offline':
+        try:
+            asyncio.run(online(text, output))
+            raise SystemExit(0)
+        except Exception as error:
+            print('線上語音暫時不可用，改用離線：'+type(error).__name__, file=sys.stderr)
+            output.unlink(missing_ok=True)
+    offline(text, output)
+OMA_VOICE_FILE_1_END
+put "$HOME/.local/share/oma-speak/bash.sh" <<'OMA_VOICE_FILE_2_END'
+# Insert at the cursor, preserving any existing input. Never press Enter.
+_oma_speak_insert() {
+  local dictated
+  [[ -f $HOME/.cache/oma-speak/latest.txt ]] || return 0
+  dictated=$(< "$HOME/.cache/oma-speak/latest.txt")
+  READLINE_LINE="${READLINE_LINE:0:READLINE_POINT}${dictated}${READLINE_LINE:READLINE_POINT}"
+  READLINE_POINT=$((READLINE_POINT + ${#dictated}))
+}
+bind -x '"\C-g":_oma_speak_insert'
+OMA_VOICE_FILE_2_END
+put "$HOME/.local/share/oma-speak/index.html" <<'OMA_VOICE_FILE_3_END'
+<!doctype html><html lang="zh-Hant"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>語音輸入</title>
+<style>body{font:18px system-ui;background:#121820;color:#eef3fa;margin:24px auto;padding:0 20px;max-width:620px}button,select,textarea{font:inherit;border-radius:10px;padding:14px;margin:6px 0;box-sizing:border-box}button{background:#93c5fd;color:#101820;border:0;min-height:52px}textarea{width:100%;height:240px;background:#202c3a;color:white;border:1px solid #64748b}select{width:100%}p{line-height:1.5}#status{color:#b9d9ff;min-height:80px;white-space:pre-wrap}.buttons{display:flex;gap:10px;flex-wrap:wrap}small{color:#aab8ca}</style>
+<div class="buttons" style="justify-content:space-between;align-items:center"><h1>語音輸入</h1><button id="ui-language" type="button">English</button></div><p>按開始後說一段話；結束後可直接點文字修改，再保存到首頁。</p>
+<select id="language"><option value="zh-TW">中文（台灣）</option><option value="zh-CN">中文（普通話）</option><option value="en-US">English</option><option value="th-TH">ไทย</option></select>
+<div class="buttons"><button id="chinese">說中文</button><button id="english">Speak English</button></div><p><small>中英混說可能誤判。說英文前點 English，說完切回中文，文字會接在同一段。</small></p><div class="buttons"><button id="start">開始語音輸入</button><button id="stop" disabled>停止</button></div><p id="status" role="status" aria-live="polite">準備好了。首次使用請允許瀏覽器使用麥克風。</p>
+<div id="alternatives"></div><textarea id="text" placeholder="辨識文字會出現在這裡，也可以手動修改。"></textarea>
+<div class="buttons"><button id="save">保存到首頁</button><button id="copy">複製文字</button><button id="clear">清空</button></div>
+<p>回首頁「語音輸入」工具，按「送到目前目標」，不用複製貼上。</p><small>辨識使用瀏覽器的語音服務，可能將音訊傳給服務供應商。文字不會自動送到目前目標。</small>
+<script>
+const $=id=>document.getElementById(id),status=$('status'),text=$('text');
+const token=location.hash.slice(1);history.replaceState(null,'',location.pathname);
+
+const UI_STRINGS = {"語音輸入": "Dictation", "按開始後說一段話；結束後可直接點文字修改，再保存到首頁。": "Tap Start and speak. Edit the text after stopping, then save it to the home screen.", "說中文": "Speak Chinese", "中英混說可能誤判。說英文前點 English，說完切回中文，文字會接在同一段。": "Mixed languages may be misheard. Choose English before speaking English; switching back keeps your text.", "開始語音輸入": "Start dictation", "停止": "Stop", "準備好了。首次使用請允許瀏覽器使用麥克風。": "Ready. Allow microphone access when asked.", "辨識文字會出現在這裡，也可以手動修改。": "Recognized text appears here. You can edit it.", "保存到首頁": "Save to home", "複製文字": "Copy text", "清空": "Clear", "回首頁「語音輸入」工具，按「送到目前目標」，不用複製貼上。": "Return to the Dictation widget and tap Send to target.", "辨識使用瀏覽器的語音服務，可能將音訊傳給服務供應商。文字不會自動送到目前目標。": "Browser speech recognition may send audio to its provider. Saving does not automatically send text to the selected target.", "正在聽… 說完按停止；點文字框可立即編輯。": "Listening… Tap Stop when finished; tap the text box to edit.", "辨識已停止。直接點文字框修改，再保存到首頁。": "Recognition stopped. Edit the text, then save it.", "已暫停聽寫，現在可直接編輯文字。": "Dictation paused. You can edit the text.", "已停止，可保存文字。": "Stopped. You can save the text.", "已清空。": "Cleared.", "正在停止…": "Stopping…", "保存失敗：": "Save failed: ", "已保存。回首頁「語音輸入」按「送到目前目標」。": "Saved. Return to the Dictation widget and tap Send to target.", "已複製。": "Copied.", "請長按選取的文字並複製。": "Long-press the selected text to copy it.", "此瀏覽器不支援語音辨識，請使用 Chrome 開啟。": "This browser does not support speech recognition. Open in Chrome.", "麥克風權限被拒絕。請到 Android 設定 → 應用程式 → 目前瀏覽器 → 權限 → 麥克風，並在瀏覽器的本站設定允許麥克風。給 omalauncher 權限不會同時授權瀏覽器。": "Microphone denied. Allow the browser microphone permission in Android settings and browser site settings.", "瀏覽器不允許此語音服務，請用 Chrome 開啟。": "Speech service blocked. Try Chrome.", "無法取得麥克風。請確認瀏覽器權限，並關閉其他正在錄音的程式。": "Microphone unavailable. Check browser permissions and close other recording apps.", "語音服務連線失敗，請檢查網路後重試。": "Speech service network error. Check connection and retry.", "沒聽到聲音，請按開始重試。": "No speech heard. Tap Start to retry.", "此語音服務不支援所選語言，請切換語言。": "This speech service does not support the selected language.", "語音已停止。": "Speech stopped.", "先按停止，再選候選文字。": "Tap Stop before choosing another transcript.", "這句已修改，請直接編輯文字。": "This sentence was edited; change it directly.", "最近一句候選（停止後可選）：": "Alternatives for the last phrase (select after stopping):", "請從首頁「語音輸入」重新開啟。": "Reopen from the Dictation widget.", "辨識錯誤：": "Recognition error: ", "無法開始：": "Could not start: "};
+let uiLanguage='zh';
+const originalNodes=[];
+const walker=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT);
+while(walker.nextNode()){const node=walker.currentNode;if(UI_STRINGS[node.textContent.trim()])originalNodes.push([node,node.textContent.trim()]);}
+const originalPlaceholder=$('text').getAttribute('placeholder');
+let updatingStatus=false;
+function localize(value){if(uiLanguage==='zh')return value;for(const [zh,en] of Object.entries(UI_STRINGS)){if(value===zh)return en;if(value.startsWith(zh) && zh.endsWith('：'))return en+value.slice(zh.length);}return value;}
+function applyLanguage(){
+ document.documentElement.lang=uiLanguage==='en'?'en':'zh-Hant';
+ for(const [node,zh] of originalNodes)node.textContent=uiLanguage==='en'?UI_STRINGS[zh]:zh;
+ $('text').placeholder=localize(originalPlaceholder);
+ $('ui-language').textContent=uiLanguage==='en'?'中文':'English';
+ const raw=status.dataset.original || status.textContent;status.textContent=localize(raw);
+}
+const statusObserver=new MutationObserver(()=>{if(updatingStatus)return;updatingStatus=true;let v=status.textContent;const old=status.dataset.original;if(v!==localize(old||'')){status.dataset.original=v;const translated=localize(v);if(translated!==v)status.textContent=translated;}updatingStatus=false;});
+statusObserver.observe(status,{childList:true,characterData:true,subtree:true});
+$('ui-language').onclick=async()=>{
+ const value=uiLanguage==='en'?'zh':'en';
+ try{const response=await fetch('/language',{method:'POST',headers:{'Content-Type':'application/json','X-Speak-Token':token},body:JSON.stringify({language:value})});if(!response.ok)throw Error(await response.text());uiLanguage=value;applyLanguage();}
+ catch(error){status.textContent='Language change failed: '+error.message;}
+};
+fetch('/language').then(r=>r.text()).then(value=>{uiLanguage=value.trim()==='en'?'en':'zh';applyLanguage();}).catch(()=>{});
+
+const Speech=window.SpeechRecognition||window.webkitSpeechRecognition;
+let recognition=null,wanted=false,timer=null,failures=0,committed='',interim='',afterStop=null;
+text.value=localStorage.getItem('oma-speak-draft')||'';
+$('language').value=localStorage.getItem('oma-speak-language')||'zh-TW';
+function persist(){localStorage.setItem('oma-speak-draft',text.value);}
+text.oninput=persist;
+function controls(){ $('start').disabled=wanted||!!recognition||!Speech;$('stop').disabled=!wanted&&!recognition;$('language').disabled=wanted||!!recognition;text.readOnly=false; }
+function halt(message){wanted=false;clearTimeout(timer);status.textContent=message;controls();}
+function startSession(){
+ if(!wanted||recognition)return;
+ const r=new Speech();recognition=r;const base=text.value;committed=base;interim='';
+ r.lang=$('language').value;r.interimResults=true;r.continuous=false;r.maxAlternatives=3;let endedByError=false;
+ r.onstart=()=>{status.textContent='正在聽… 說完按停止；點文字框可立即編輯。';controls();};
+ r.onresult=e=>{
+  if(recognition!==r)return;
+  // Results are a session snapshot, not new append-only sentences.
+  let rendered=base;
+  for(let i=0;i<e.results.length;i++){
+   const result=e.results[i],words=result[0].transcript;
+   const prefix=rendered+(rendered&&!/[\s\n]$/.test(rendered)?' ':'');
+   if(result.isFinal)showAlternatives(result,prefix);
+   rendered=prefix+words;
+  }
+  text.value=rendered;persist();
+ };
+ r.onerror=e=>{if(recognition!==r)return;endedByError=true;failures++;const errors={'not-allowed':'麥克風權限被拒絕。請到 Android 設定 → 應用程式 → 目前瀏覽器 → 權限 → 麥克風，並在瀏覽器的本站設定允許麥克風。給 omalauncher 權限不會同時授權瀏覽器。','service-not-allowed':'瀏覽器不允許此語音服務，請用 Chrome 開啟。','audio-capture':'無法取得麥克風。請確認瀏覽器權限，並關閉其他正在錄音的程式。','network':'語音服務連線失敗，請檢查網路後重試。','no-speech':'沒聽到聲音，請按開始重試。','language-not-supported':'此語音服務不支援所選語言，請切換語言。','aborted':'語音已停止。'};
+ status.textContent=errors[e.error]||'辨識錯誤：'+e.error;
+ halt(status.textContent);};
+ r.onend=()=>{
+  if(recognition!==r)return;
+  recognition=null;wanted=false;persist();controls();
+  if(afterStop){const f=afterStop;afterStop=null;f();}
+  else if(!endedByError)status.textContent='辨識已停止。直接點文字框修改，再保存到首頁。';
+ };
+ try{r.start();controls();}catch(e){recognition=null;halt('無法開始：'+e.message);}
+}
+function stopForEditing(){
+ const r=recognition;recognition=null;wanted=false;clearTimeout(timer);afterStop=null;
+ if(r)r.abort();controls();persist();
+}
+text.onfocus=()=>{if(recognition){stopForEditing();status.textContent='已暫停聽寫，現在可直接編輯文字。';}};
+text.oninput=()=>{if(recognition)stopForEditing();persist();};
+function switchLanguage(lang){
+ stopForEditing();$('language').value=lang;localStorage.setItem('oma-speak-language',lang);failures=0;
+ wanted=true;startSession();
+}
+$('chinese').onclick=()=>switchLanguage('zh-CN');
+$('english').onclick=()=>switchLanguage('en-US');
+$('language').onchange=()=>localStorage.setItem('oma-speak-language',$('language').value);
+function showAlternatives(result,prefix){
+ const box=$('alternatives');box.replaceChildren();
+ if(result.length<2)return;
+ const label=document.createElement('small');label.textContent='最近一句候選（停止後可選）：';box.append(label);
+ for(let j=0;j<result.length;j++){
+  const b=document.createElement('button');b.textContent=result[j].transcript;
+  const original=prefix+result[0].transcript,candidate=prefix+result[j].transcript;
+  b.onclick=()=>{if(recognition||wanted){status.textContent='先按停止，再選候選文字。';return;}if(!text.value.startsWith(original)){status.textContent='這句已修改，請直接編輯文字。';return;}text.value=candidate+text.value.slice(original.length);persist();box.replaceChildren();};box.append(b);
+ }
+}
+
+$('start').onclick=()=>{failures=0;wanted=true;startSession();};
+$('stop').onclick=()=>{halt('正在停止…');if(recognition)recognition.stop();else status.textContent='已停止，可保存文字。';};
+async function save(){try{if(!token)throw Error('請從首頁「語音輸入」重新開啟。');const r=await fetch('/text',{method:'POST',headers:{'Content-Type':'application/json','X-Speak-Token':token},body:JSON.stringify({text:text.value}),signal:AbortSignal.timeout(10000)});const msg=await r.text();if(!r.ok)throw Error(msg);status.textContent='已保存。回首頁「語音輸入」按「送到目前目標」。';}catch(e){status.textContent='保存失敗：'+e.message;}}
+$('save').onclick=()=>{wanted=false;clearTimeout(timer);if(recognition){afterStop=save;recognition.stop();}else save();controls();};
+$('copy').onclick=async()=>{try{await navigator.clipboard.writeText(text.value);status.textContent='已複製。';}catch(e){text.focus();text.select();status.textContent='請長按選取的文字並複製。';}};
+$('clear').onclick=()=>{halt('已清空。');afterStop=null;if(recognition){recognition.onresult=null;recognition.abort();}text.value='';committed='';interim='';$('alternatives').replaceChildren();persist();};
+document.addEventListener('visibilitychange',()=>{if(document.hidden){wanted=false;clearTimeout(timer);if(recognition)recognition.stop();persist();}});
+if(!Speech)status.textContent='此瀏覽器不支援語音辨識，請使用 Chrome 開啟。';controls();
+</script></html>
+OMA_VOICE_FILE_3_END
+put "$HOME/.local/share/oma-speak/server.py" <<'OMA_VOICE_FILE_4_END'
+import hmac
+import json
+import os
+from pathlib import Path
+import secrets
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+CACHE = Path.home() / '.cache/oma-speak'
+CACHE.mkdir(parents=True, exist_ok=True, mode=0o700)
+TOKEN = secrets.token_urlsafe(32)
+PORT = 18763
+ORIGIN = f'http://127.0.0.1:{PORT}'
+PAGE_PATH = Path(__file__).with_name('index.html')
+LANG_PATH = Path.home() / '.config/omalauncher/voice-ui-language'
+
+class Handler(BaseHTTPRequestHandler):
+    def log_message(self, *args):
+        pass
+
+    def reply(self, code, data, kind='text/plain; charset=utf-8'):
+        data = data.encode()
+        self.send_response(code)
+        self.send_header('Content-Type', kind)
+        self.send_header('Content-Length', str(len(data)))
+        self.send_header('Cache-Control', 'no-store')
+        self.send_header('X-Frame-Options', 'DENY')
+        self.end_headers()
+        self.wfile.write(data)
+
+    def do_GET(self):
+        if self.headers.get('Host') != f'127.0.0.1:{PORT}':
+            return self.reply(403, 'Invalid host')
+        if self.path == '/language':
+            return self.reply(200, 'en' if LANG_PATH.exists() and LANG_PATH.read_text().strip() == 'en' else 'zh')
+        if self.path == '/health':
+            return self.reply(200, 'oma-speak-v1')
+        if self.path != '/':
+            return self.reply(404, 'Not found')
+        self.reply(200, PAGE_PATH.read_text(), 'text/html; charset=utf-8')
+
+    def do_POST(self):
+        if (self.path not in ('/text', '/language') or self.headers.get('Origin') != ORIGIN
+                or not hmac.compare_digest(self.headers.get('X-Speak-Token', ''), TOKEN)):
+            return self.reply(403, 'Forbidden')
+        try:
+            size = int(self.headers.get('Content-Length', '0'))
+            if not 0 < size <= 65536:
+                return self.reply(413, 'Text too long')
+            body = json.loads(self.rfile.read(size))
+            if self.path == '/language':
+                value = body.get('language')
+                if value not in ('zh', 'en'):
+                    raise ValueError()
+                LANG_PATH.parent.mkdir(parents=True, exist_ok=True)
+                temp = LANG_PATH.with_name(LANG_PATH.name+'.tmp')
+                temp.write_text(value)
+                os.chmod(temp, 0o600)
+                temp.replace(LANG_PATH)
+                return self.reply(200, 'Language saved')
+            text = body['text']
+            if not isinstance(text, str) or len(text) > 16000:
+                raise ValueError()
+            # Keep terminal escape/control sequences out of Bash insertion.
+            text = ''.join(c for c in text if c >= ' ' and c != '\x7f').strip()
+            tmp = CACHE / 'latest.tmp'
+            tmp.write_text(text)
+            os.chmod(tmp, 0o600)
+            tmp.replace(CACHE / 'latest.txt')
+            self.reply(200, 'Saved. Return to the launcher and tap Send to target.')
+        except (ValueError, KeyError, TypeError, UnicodeError):
+            self.reply(400, 'Invalid text')
+
+if __name__ == '__main__':
+    server = ThreadingHTTPServer(('127.0.0.1', PORT), Handler)
+    server.daemon_threads = True
+    tokenfile = CACHE / 'token'
+    tokenfile.write_text(TOKEN)
+    os.chmod(tokenfile, 0o600)
+    server.serve_forever()
+OMA_VOICE_FILE_4_END
+put "$HOME/.local/bin/oma-send-dictation" <<'OMA_VOICE_FILE_5_END'
+#!/usr/bin/python
+import pathlib, subprocess, json
+try:
+    text = pathlib.Path.home().joinpath('.cache/oma-speak/latest.txt').read_text().strip()
+    if not text:
+        raise ValueError('請先開始語音輸入，停止後保存。')
+    subprocess.run([str(pathlib.Path.home()/'.local/bin/oma-voice'), 'send', '--json', '--text', text], check=False)
+except (OSError, ValueError) as e:
+    print(json.dumps({'ok': False, 'error': str(e), 'error_en': 'Start dictation, stop and save first.'}, ensure_ascii=False))
+OMA_VOICE_FILE_5_END
+put "$HOME/.local/bin/oma-voice" <<'OMA_VOICE_FILE_6_END'
+#!/bin/sh
+exec python "$HOME/.local/share/oma-voice/oma_voice.py" "$@"
+OMA_VOICE_FILE_6_END
+put "$HOME/.local/bin/speak" <<'OMA_VOICE_FILE_7_END'
+#!/bin/bash
+set -eu
+cache="$HOME/.cache/oma-speak"
+case "${1:-}" in
+  --text) cat "$cache/latest.txt" 2>/dev/null || true; exit ;;
+  --help) echo 'speak: open voice input; speak --text: print latest dictation. Bash Ctrl+G inserts it.'; exit ;;
+  '') ;;
+  *) echo 'Usage: speak [--text|--help]' >&2; exit 2 ;;
+esac
+mkdir -p "$cache"
+exec 9>"$cache/start.lock"
+flock 9
+if ! curl --noproxy '*' -fsS --max-time 2 http://127.0.0.1:18763/health 2>/dev/null | grep -qx oma-speak-v1; then
+  nohup python "$HOME/.local/share/oma-speak/server.py" >"$cache/server.log" 2>&1 < /dev/null 9>&- &
+  for ((i=0;i<40;i++)); do
+    if curl --noproxy '*' -fsS --max-time 1 http://127.0.0.1:18763/health 2>/dev/null | grep -qx oma-speak-v1; then break; fi
+    sleep .1
+  done
+fi
+if ! curl --noproxy '*' -fsS --max-time 2 http://127.0.0.1:18763/health 2>/dev/null | grep -qx oma-speak-v1; then
+  echo "Could not start voice input. See $cache/server.log" >&2; exit 1
+fi
+token=$(cat "$cache/token")
+flock -u 9
+xdg-open "http://127.0.0.1:18763/#$token"
+OMA_VOICE_FILE_7_END
+chmod u+x "$HOME/.local/bin/oma-send-dictation" "$HOME/.local/bin/oma-voice" "$HOME/.local/bin/speak"
+venv="$share/oma-voice/venv"
+[ -x "$venv/bin/python" ] || python -m venv "$venv" || { say failed; exit 1; }
+# Without the network this fails and speech stays offline (espeak-ng) until the next setup.
+"$venv/bin/python" -m pip install --quiet --disable-pip-version-check edge-tts==7.2.8 || echo "edge-tts was not installed"
+# Stop the old voice service and dictation page; the widget starts the new ones.
+pkill -u "$(id -u)" -f '^[^ ]*python[0-9.]* .*/oma_voice\.py daemon$' || true
+pkill -u "$(id -u)" -f '^[^ ]*python[0-9.]* .*/oma-speak/server\.py$' || true
+printf '%s' '3.1-af2f8b7a' > "$HOME/.local/share/oma-voice/store-version"
+say done
+""") }
+      Button { fill: width; height: 40; text: zh ? "English" : "中文"; onTap: run(zh ? "mkdir -p ~/.config/omalauncher && printf en > ~/.config/omalauncher/voice-ui-language" : "mkdir -p ~/.config/omalauncher && printf zh > ~/.config/omalauncher/voice-ui-language") }
+    } else {
+    Row {
+      Text { text: zh ? "終端播報" : "TERMINAL VOICE"; style: label; color: accent; weight: 1 }
+      Button { text: zh ? "EN" : "中"; width: 46; onTap: run(zh ? "~/.local/bin/oma-voice language en" : "~/.local/bin/oma-voice language zh") }
+    }
+    Text { text: voice.source == "terminal" ? (zh ? "來源：${voice.source_name ?? '終端'}" : "Source: ${voice.source_name ?? 'Terminal'}") : (zh ? "來源：Codex 會話" : "Source: Codex chat"); style: small; color: accent }
+    Text { text: statusText; style: small; maxLines: 2; color: offline ? yellow : muted }
+    Text { text: replyTime; style: small; color: muted }
+    Text { text: voice.summary == "" || voice.summary == null ? (zh ? "選擇 Codex 會話或連接 tmux 終端。" : "Choose a Codex chat or connect a tmux terminal.") : voice.summary; style: small; maxLines: 4; weight: 1 }
+    Row {
+      gap: 4
+      Button { text: (zh ? "播放" : "Play"); weight: 1; height: 40; onTap: run("~/.local/bin/oma-voice replay") }
+      Button { text: (zh ? "停止" : "Stop"); weight: 1; height: 40; onTap: run("~/.local/bin/oma-voice stop") }
+    }
+    Row {
+      gap: 4
+      Button { text: (zh ? "同步" : "Sync"); weight: 1; height: 40; onTap: run("~/.local/bin/oma-voice refresh") }
+      Button { text: (zh ? "詳情" : "Details"); weight: 1; height: 40; onTap: screen() }
+    }
+    }
+  }
+  screen {
+    title: (zh ? "TERMINAL // 播報" : "TERMINAL // VOICE")
+    Column {
+      fill: true
+      height: screenHeight
+      gap: 10
+      Row {
+        height: 44
+        Button { weight: 1; height: 44; text: (zh ? "同步回覆" : "Sync reply"); onTap: run("~/.local/bin/oma-voice refresh") }
+        Button { weight: 1; height: 44; text: (zh ? "停止播放" : "Stop audio"); onTap: run("~/.local/bin/oma-voice stop") }
+        Button { weight: 1; height: 44; text: (zh ? "返回" : "Back"); onTap: close() }
+      }
+      Column {
+        scroll: true
+        fill: width
+        height: max(1, screenHeight - 54)
+        gap: 12
+        if !ready { Text { text: zh ? "尚未安裝或需要更新：請返回首頁，在此小工具上按「安裝」。" : "Not set up yet: go back and tap Set up on the tile."; color: yellow; maxLines: 3 } }
+        Text { text: statusText; color: offline ? yellow : accent; maxLines: 3 }
+        Text { text: replyTime; style: small; color: muted }
+        Text { text: (zh ? voice.error : voice.error_en) ?? ""; style: small; color: red; maxLines: 5 }
+        Text { text: voice.source == "terminal" ? (zh ? "目前讀取：${voice.source_name ?? '終端'} · tmux 工作階段 oma-voice" : "Reading: ${voice.source_name ?? 'Terminal'} · tmux session oma-voice") : (zh ? "目前讀取：Codex 會話" : "Reading: Codex chat"); bold: true; color: accent; maxLines: 3 }
+        Row {
+          Button { weight: 1; height: 44; text: zh ? "Codex 會話" : "Codex chat"; onTap: run("~/.local/bin/oma-voice source codex") }
+          Button { weight: 1; height: 44; text: zh ? "終端 / Claude" : "Terminal / Claude"; onTap: run("~/.local/bin/oma-voice source terminal") }
+        }
+        if voice.source == "terminal" {
+          Text { text: zh ? "在原本的終端輸入下方命令，之後可在該視窗執行 Codex、Claude 或其他程式。播放會讀取目前畫面；語音輸入會送到這個窗格。" : "Run this in your existing terminal, then start Codex, Claude or another program there. Play reads the current screen; dictation sends to that pane."; style: small; color: muted; maxLines: 7 }
+          Button { fill: width; height: 44; text: zh ? "複製終端連接命令" : "Copy terminal setup command"; onTap: copy("tmux new -A -s oma-voice") }
+        } else {
+        Text { text: voice.follow_latest ? (zh ? "跟隨最近活動的對話" : "Following latest active Codex chat") : (zh ? "已固定此對話" : "Pinned to this chat"); bold: true }
+        Text { text: voice.thread ?? (zh ? "等待連接" : "Waiting for connection"); style: small; maxLines: 2; color: muted }
+        Text { text: (zh ? "正式回覆完成後自動更新；同步只更新文字，不會自動重播舊內容。" : "Completed replies update automatically. Sync refreshes text without replaying older replies."); style: small; maxLines: 4; color: muted }
+        }
+        Row {
+          Button { weight: 1; height: 44; text: (zh ? "播放摘要" : "Summary"); onTap: run("~/.local/bin/oma-voice replay") }
+          Button { weight: 1; height: 44; text: (zh ? "播放全文" : "Full reply"); onTap: run("~/.local/bin/oma-voice replay --full") }
+        }
+        Text { text: voice.source == "terminal" ? (zh ? "終端畫面" : "Terminal screen") : (zh ? "最近回覆" : "Latest reply"); bold: true; color: accent }
+        Text { text: voice.full == "" || voice.full == null ? (zh ? "尚無可讀內容" : "Nothing to read yet") : voice.full; maxLines: 160 }
+        Button { fill: width; height: 44; text: (zh ? "複製內容" : "Copy text"); onTap: copy(voice.full ?? "") }
+        Button { fill: width; height: 44; text: zh ? "介面語言：中文 → English" : "Language: English → 中文"; onTap: run(zh ? "~/.local/bin/oma-voice language en" : "~/.local/bin/oma-voice language zh") }
+        Text { text: (zh ? "播報設定" : "Voice settings"); bold: true; color: accent }
+        if voice.source != "terminal" { Button { fill: width; height: 44; text: voice.follow_latest ? (zh ? "對話：自動跟隨" : "Chat: follow latest") : (zh ? "對話：固定" : "Chat: pinned"); onTap: run("~/.local/bin/oma-voice follow") } }
+        if voice.source != "terminal" { Button { fill: width; height: 44; text: voice.auto ? (zh ? "自動播報：開" : "Auto-read: on") : (zh ? "自動播報：關" : "Auto-read: off"); onTap: run("~/.local/bin/oma-voice auto toggle") } }
+        Button { fill: width; height: 44; text: voice.engine == "offline" ? (zh ? "聲音：離線" : "Voice: offline") : (zh ? "聲音：自然（線上）" : "Voice: online"); onTap: run("~/.local/bin/oma-voice engine toggle") }
+        Button { fill: width; height: 44; text: (zh ? "開始語音輸入" : "Start dictation"); onTap: run("~/.local/bin/speak") }
+      }
+    }
+  }
+}

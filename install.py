@@ -9,6 +9,8 @@ import subprocess
 import sys
 
 ROOT = Path(__file__).resolve().parent
+sys.path.insert(0, str(ROOT/'tools'))
+import build_store
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
@@ -46,11 +48,9 @@ def main():
             if file.is_file():
                 write(destination+'/'+file.name, file.read_bytes(), folder=='bin')
     for file in sorted((ROOT/'widgets').glob('*.owl')):
-        # OWL strings contain shell commands; quote the home path for shell and OWL independently.
-        import json, shlex
-        quoted = shlex.quote(str(home))
-        escaped = json.dumps(quoted, ensure_ascii=False)[1:-1]
-        write('.config/omalauncher/widgets/'+file.name, file.read_text().replace('__HOME__', escaped).encode())
+        write('.config/omalauncher/widgets/'+file.name, build_store.render(file.read_text()).encode())
+    # The widgets show their own setup button until this names the programs they were built with.
+    write(build_store.MARKER, build_store.payload_id().encode())
     print('Installed 終端播報 and 語音輸入. Personal settings and conversation data were preserved.')
     print('Updated files backed up at:', backup)
     print('After updating an already-running version, restart Linux once to reload its voice service.')

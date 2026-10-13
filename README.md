@@ -24,6 +24,10 @@ These screenshots use example text. The English pair shows a Claude terminal con
 
 Requires Omalauncher with Arch Linux, OWL 5 support, and a working audio output.
 
+**From the widget store:** install **終端播報** (Terminal Voice) and **語音輸入** (Dictation), then tap **Set up** on either tile. Setup writes the programs to `~/.local` and installs edge-tts for online speech; it covers both widgets.
+
+**From this repository:**
+
 ```sh
 git clone https://github.com/WeeboWIZ/Omalauncher_Tools.git
 cd Omalauncher_Tools
@@ -48,11 +52,11 @@ Dictation uses browser speech recognition. Choose a speech language, tap Start, 
 
 ## Update and data
 
-Download or pull the latest version and rerun `python install.py`. It preserves personal settings and draft text and backs up replaced program files under `~/.local/share/oma-voice/install-backups/`. Restart Linux if an older voice service is still running. Importing only the `.owl` files does not install their background programs.
+Download or pull the latest version and rerun `python install.py`. It preserves personal settings and draft text and backs up replaced program files under `~/.local/share/oma-voice/install-backups/`. Restart Linux if an older voice service is still running. The widgets hold their background programs: after importing or updating only the `.owl` files, tap **Set up** or **Update** on the tile.
 
 The repository contains no conversation logs, drafts, tokens, audio files, models, or virtual environments. Your Codex logs remain under `~/.codex/sessions/`; voice settings and output under `~/.config/omalauncher/voice.json` and `~/.cache/oma-voice/`; dictation text under `~/.cache/oma-speak/` and browser local storage. Terminal mode reads only the dedicated `oma-voice` tmux session. Online TTS sends the text being spoken to Microsoft Edge TTS. Browser speech recognition may use the browser provider's online service. Select offline speech to use local espeak-ng. The dictation page listens only on `127.0.0.1:18763` and checks an origin and random token before saving text.
 
-Run `python -m unittest discover -s tests -v` to check the package. You can preview a widget after installation with `owl-check ~/.config/omalauncher/widgets/46-speak.owl`.
+Run `python -m unittest discover -s tests -v` to check the package. `python tools/build_store.py` rebuilds the store folders under `store/`; see `docs/STORE_PLAN.md`. You can preview a widget after installation with `owl-check ~/.config/omalauncher/widgets/46-speak.owl`.
 
 </details>
 
@@ -78,6 +82,10 @@ Run `python -m unittest discover -s tests -v` to check the package. You can prev
 
 需要 Omalauncher 的 Arch Linux、OWL 5 支援和可用的音訊輸出。
 
+**從小工具商店安裝：** 安裝「終端播報」與「語音輸入」，在任一個小工具上按「安裝」。安裝會把程式寫入 `~/.local` 並下載 edge-tts 線上語音，一次完成兩個小工具。
+
+**從本倉庫安裝：**
+
 ```sh
 git clone https://github.com/WeeboWIZ/Omalauncher_Tools.git
 cd Omalauncher_Tools
@@ -102,10 +110,10 @@ tmux new -A -s oma-voice
 
 ## 更新與資料
 
-下載最新版本並重新執行 `python install.py`。安裝會保留個人設定與草稿，並把舊程式備份到 `~/.local/share/oma-voice/install-backups/`。若舊播報服務仍在運行，重啟 Linux 載入新程式。只匯入 `.owl` 檔不會安裝背景程式。
+下載最新版本並重新執行 `python install.py`。安裝會保留個人設定與草稿，並把舊程式備份到 `~/.local/share/oma-voice/install-backups/`。若舊播報服務仍在運行，重啟 Linux 載入新程式。小工具內含背景程式：只匯入或更新 `.owl` 檔時，在小工具上按「安裝」或「更新」即可。
 
 倉庫不包含對話紀錄、草稿、Token、音檔、模型或虛擬環境。Codex 記錄位於 `~/.codex/sessions/`；播報設定和快取位於 `~/.config/omalauncher/voice.json`、`~/.cache/oma-voice/`；聽寫文字位於 `~/.cache/oma-speak/` 和瀏覽器本機儲存。終端模式只讀取指定的 `oma-voice` tmux 工作階段。線上語音會把朗讀文字傳給 Microsoft Edge TTS；瀏覽器語音辨識也可能使用供應商的線上服務。選擇離線語音則使用本機 espeak-ng。聽寫頁只監聽 `127.0.0.1:18763`，保存時檢查來源與隨機 Token。
 
-執行 `python -m unittest discover -s tests -v` 可檢查分享包；安裝後以 `owl-check ~/.config/omalauncher/widgets/46-speak.owl` 預覽首頁和詳情頁。
+執行 `python -m unittest discover -s tests -v` 可檢查分享包；`python tools/build_store.py` 重新產生 `store/` 下的商店版本，流程見 `docs/STORE_PLAN.md`。安裝後以 `owl-check ~/.config/omalauncher/widgets/46-speak.owl` 預覽首頁和詳情頁。
 
 </details>

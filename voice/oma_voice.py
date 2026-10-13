@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Voice reader and dictation bridge for Codex logs or a tmux terminal."""
+'''Voice reader and dictation bridge for Codex logs or a tmux terminal.'''
 import argparse
 import datetime
 import fcntl
@@ -56,7 +56,7 @@ def clean_text(text):
 
 
 def summarize(text, limit=360):
-    """Extract sentences verbatim; retain an explicit failure/limitation if present."""
+    '''Extract sentences verbatim; retain an explicit failure/limitation if present.'''
     text = clean_text(text)
     if len(text) <= limit:
         return text
@@ -82,7 +82,7 @@ def summarize(text, limit=360):
 
 
 def completed_reply(event):
-    """Ignore commentary, tool output, subagent logs and aborted turns."""
+    '''Ignore commentary, tool output, subagent logs and aborted turns.'''
     if event.get('type') != 'event_msg':
         return None
     payload = event.get('payload', {})
@@ -111,7 +111,7 @@ def latest_session():
 
 
 def terminal_snapshot():
-    """Read only the current pane of the dedicated, user-entered tmux session."""
+    '''Read only the current pane of the dedicated, user-entered tmux session.'''
     if not shutil.which('tmux'):
         raise ValueError('需要 tmux / tmux is required')
     pane = subprocess.run(['tmux', 'display-message', '-p', '-t', TMUX_SESSION, '#{pane_id}'],
@@ -132,7 +132,7 @@ def terminal_snapshot():
 
 
 def terminal_send(pane_id, text):
-    """Submit one explicit user action to the already selected tmux pane."""
+    '''Submit one explicit user action to the already selected tmux pane.'''
     if not re.fullmatch(r'%[0-9]+', pane_id):
         raise ValueError('無效的終端窗格')
     text = ' '.join(text.splitlines()).strip()

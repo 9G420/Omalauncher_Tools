@@ -11,6 +11,8 @@ from unittest import mock
 import uuid
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT/'tools'))
+import build_store
 spec = importlib.util.spec_from_file_location('voice', ROOT/'voice/oma_voice.py')
 voice = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(voice)
@@ -89,11 +91,37 @@ class VoiceTests(unittest.TestCase):
                 subprocess.run([sys.executable,str(ROOT/'install.py'),'--skip-deps'],env=env,check=True,stdout=subprocess.DEVNULL)
             self.assertEqual(config.read_text(),'{"auto":false}')
             tile = (home/'.config/omalauncher/widgets/46-speak.owl').read_text()
-            self.assertNotIn('__HOME__',tile)
-            self.assertNotIn('/root/',tile)
-            self.assertIn(directory,tile)
+            self.assertNotIn('__',tile.split('"""')[0])
+            self.assertNotIn(directory,tile)
+            self.assertEqual((home/build_store.MARKER).read_text(),build_store.payload_id())
             self.assertTrue(os.access(home/'.local/bin/oma-voice',os.X_OK))
             self.assertTrue(list((home/'.local/share/oma-voice/install-backups').rglob('oma_voice.py')))
+
+    def test_store_widgets_are_current_and_within_store_rules(self):
+        with tempfile.TemporaryDirectory() as directory:
+            build_store.build(Path(directory))
+            for name in ('terminal-voice','dictation'):
+                built = (Path(directory)/name/'widget.owl').read_bytes()
+                self.assertEqual(built,(ROOT/'store/widgets'/build_store.AUTHOR/name/'widget.owl').read_bytes(),'run python tools/build_store.py')
+                self.assertLess(len(built),build_store.MAX_BYTES)
+                text = built.decode()
+                self.assertNotIn('\r',text)
+                for personal in ('/root/','/home/','__HOME__'):
+                    self.assertNotIn(personal,text)
+                self.assertIn('version: "%s"'%build_store.VERSION,text)
+                self.assertEqual(text.count('"""')%2,0)
+
+    def test_setup_script_installs_the_same_files_as_the_installer(self):
+        with tempfile.TemporaryDirectory(prefix='voice test ') as directory:
+            home = Path(directory)
+            # Leave out the venv and pip steps: they need the network.
+            script = '\n'.join(line for line in build_store.setup_script().split('\n') if not line.startswith(('venv=','[ -x "$venv','"$venv','pkill')))
+            subprocess.run(['bash','-c',script],env=dict(os.environ,HOME=directory),check=True)
+            for file,target,executable in build_store.payload_files():
+                self.assertEqual((home/target).read_text(),file.read_text())
+                self.assertEqual(os.access(home/target,os.X_OK),executable)
+            self.assertEqual((home/build_store.MARKER).read_text(),build_store.payload_id())
+            self.assertEqual((home/'.cache/oma-voice/setup-state').read_text(),'done')
 
 if __name__ == '__main__':
     unittest.main()
