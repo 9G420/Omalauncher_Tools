@@ -29,6 +29,7 @@ SOCKET = CACHE / 'control.sock'
 CONFIG = HOME / '.config/omalauncher/voice.json'
 SESSIONS = HOME / '.codex/sessions'
 TMUX_SESSION = 'oma-voice'
+FOLLOW_LATEST_MIGRATION = 1
 
 
 def atomic_json(path, value):
@@ -156,7 +157,13 @@ class Reader:
                 self.config['thread'] = latest_session()
             except ValueError:
                 self.config['thread'] = None
-        self.config.setdefault('follow_latest', True)
+        if self.config.get('follow_latest_migration', 0) < FOLLOW_LATEST_MIGRATION:
+            # Follow terminal Codex work after upgrade instead of staying pinned to an old chat.
+            # Users can still pin a chat again from the widget after this one-time migration.
+            self.config['follow_latest'] = True
+            self.config['follow_latest_migration'] = FOLLOW_LATEST_MIGRATION
+        else:
+            self.config.setdefault('follow_latest', True)
         self.config.setdefault('source', 'codex')
         self.term_last = None
         self.checked_session = 0
