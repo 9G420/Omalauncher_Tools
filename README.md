@@ -46,6 +46,18 @@ For Codex chat mode, open or resume a local Codex chat and tap **Sync**. Complet
 
 Dictation uses browser speech recognition. Choose a speech language, tap Start, stop, edit, and save. Then tap **Send to target** on the home screen. The browser must grant microphone permission; Chrome is recommended.
 
+## Terminal Voice 3.9 update
+
+- Fixes missed announcements from terminal Codex tasks when the voice service was pinned to an older Codex chat. On first launch after updating, existing installs switch to following the latest active Codex chat; users can pin a chat again from Details.
+- Use Codex chat as the source for terminal Codex sessions. The separate tmux terminal source reads a pane on demand and does not auto-read task completions.
+- Update through `install.py` or the widget's Update button, then restart Linux once so the running service loads the new code.
+
+## 終端播報 3.9 更新
+
+- 修正播報器固定在舊 Codex 對話時，漏播終端 Codex 任務完成回覆的問題。更新後首次啟動會將既有安裝切換為跟隨最近活動的 Codex 對話；之後仍可在「詳情」重新固定某個對話。
+- 終端版 Codex 仍使用 Codex 對話來源。獨立的 tmux 終端來源按需讀取窗格，不會自動朗讀任務完成內容。
+- 使用 `install.py` 或播報工具的「更新」按鈕更新，然後重新啟動 Linux 一次，讓常駐服務載入新程式。
+
 ## Update and data
 
 Download or pull the latest version and rerun `python install.py`. It preserves personal settings and draft text and backs up replaced program files under `~/.local/share/oma-voice/install-backups/`. Restart Linux if an older voice service is still running. Importing only the `.owl` files does not install their background programs.
