@@ -18,9 +18,16 @@ import uuid
 
 TRANSLATIONS = {'已連接，等待回覆': 'Connected, waiting for reply', '已同步最近回覆': 'Latest reply synced', 'Codex 正在回覆…': 'Codex is working…', '收到新回覆': 'New reply received', '已停止': 'Stopped', '正在播放': 'Preparing audio', '播放完成': 'Playback complete', '播放失敗': 'Playback failed', '自動播報已開啟': 'Auto-read enabled', '自動播報已關閉': 'Auto-read disabled', '已切換線上自然語音': 'Online voice selected', '已切換離線神經語音': 'Offline voice selected', '已送到這個 Codex 會話的佇列': 'Sent to this Codex chat queue', '已連接終端 · 點播放讀取畫面': 'Terminal connected · tap Play to read screen', '請在現有終端執行 tmux new -A -s oma-voice': 'Run tmux new -A -s oma-voice in your existing terminal', '等待會話記錄': 'Waiting for chat log', '還沒有可播放的回覆': 'No reply available to play', '找不到 Codex 會話': 'No local Codex chat found', '找不到指定會話': 'Chat not found', '需要 espeak-ng 和 paplay': 'espeak-ng and paplay are required', '播放逾時': 'Playback timed out', '請先輸入內容（最多 16000 字）': 'Enter text first (maximum 16000 characters)', '文字含有控制字元': 'Text contains control characters', '送出失敗': 'Could not send text', '未知命令': 'Unknown command', '請選 online 或 offline': 'Choose online or offline', '請先開始語音輸入，停止後保存。': 'Start dictation, stop and save first.'}
 
+VOICES = {'離線神經語音':'offline neural','離線基本語音':'offline basic','自然語音（線上）':'online natural','語音':'audio'}
+REASONS = {'線上語音未安裝':'online voice not installed: tap Update on the tile','缺少 mpg123':'mpg123 missing','線上語音無回應':'online voice unreachable'}
+
 def english(text):
-    if text.startswith('正在播放 · '):
-        return 'Playing · ' + {'離線神經語音':'offline neural','離線基本語音':'offline basic','自然語音（線上）':'online natural','語音':'audio'}.get(text.split(' · ',1)[1],text.split(' · ',1)[1])
+    for prefix, label in (('正在播放 · ', 'Playing · '), ('播放完成 · ', 'Finished · ')):
+        if text.startswith(prefix):
+            voice, _, reason = text[len(prefix):].partition('（')
+            if voice+'（'+reason in VOICES:
+                return label + VOICES[voice+'（'+reason]
+            return label + VOICES.get(voice, voice) + (' ('+REASONS.get(reason.rstrip('）'), reason.rstrip('）'))+')' if reason else '')
     return TRANSLATIONS.get(text, text)
 
 HOME = Path.home()
@@ -339,7 +346,10 @@ class Reader:
                 with self.player_lock:
                     if generation == self.generation:
                         self.process = None
-                        self.state.update(playing=False, status='播放完成')
+                        # Keep the reason on screen when the natural voice was not the one heard.
+                        used = Path(str(wav) + '.backend')
+                        used = used.read_text() if used.exists() else ''
+                        self.state.update(playing=False, status='播放完成 · '+used if '離線' in used and '（' in used else '播放完成')
                         self.save()
             except Exception as exc:
                 with self.player_lock:

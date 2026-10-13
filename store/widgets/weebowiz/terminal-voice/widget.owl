@@ -9,7 +9,7 @@ widget "終端播報" {
   let zh = uiLanguage != "en"
   source installed = file("~/.local/share/oma-voice/store-version")
   source setupState = file("~/.cache/oma-voice/setup-state")
-  let ready = installed == "3.1-af2f8b7a"
+  let ready = installed == "3.1-226dd9d4"
   let setupText = setupState == "installing" && !ready ? (zh ? "安裝中，約需一分鐘…" : "Installing, about a minute…") : setupState == "failed" ? (zh ? "安裝失敗，請查看 ~/.cache/oma-voice/setup.log" : "Setup failed: see ~/.cache/oma-voice/setup.log") : installed == "" ? (zh ? "首次使用：把播報與聽寫程式寫入 ~/.local，並下載 edge-tts 線上語音。" : "First use: writes the voice and dictation programs to ~/.local and downloads edge-tts for online speech.") : (zh ? "程式有新版，更新後才能使用。" : "The programs have an update; install it to continue.")
   source service = cmd("if [ -x ~/.local/bin/oma-voice ]; then ~/.local/bin/oma-voice ensure; fi") every 30s
   source voice = file("~/.cache/oma-voice/state.json") json
@@ -58,9 +58,16 @@ import uuid
 
 TRANSLATIONS = {'已連接，等待回覆': 'Connected, waiting for reply', '已同步最近回覆': 'Latest reply synced', 'Codex 正在回覆…': 'Codex is working…', '收到新回覆': 'New reply received', '已停止': 'Stopped', '正在播放': 'Preparing audio', '播放完成': 'Playback complete', '播放失敗': 'Playback failed', '自動播報已開啟': 'Auto-read enabled', '自動播報已關閉': 'Auto-read disabled', '已切換線上自然語音': 'Online voice selected', '已切換離線神經語音': 'Offline voice selected', '已送到這個 Codex 會話的佇列': 'Sent to this Codex chat queue', '已連接終端 · 點播放讀取畫面': 'Terminal connected · tap Play to read screen', '請在現有終端執行 tmux new -A -s oma-voice': 'Run tmux new -A -s oma-voice in your existing terminal', '等待會話記錄': 'Waiting for chat log', '還沒有可播放的回覆': 'No reply available to play', '找不到 Codex 會話': 'No local Codex chat found', '找不到指定會話': 'Chat not found', '需要 espeak-ng 和 paplay': 'espeak-ng and paplay are required', '播放逾時': 'Playback timed out', '請先輸入內容（最多 16000 字）': 'Enter text first (maximum 16000 characters)', '文字含有控制字元': 'Text contains control characters', '送出失敗': 'Could not send text', '未知命令': 'Unknown command', '請選 online 或 offline': 'Choose online or offline', '請先開始語音輸入，停止後保存。': 'Start dictation, stop and save first.'}
 
+VOICES = {'離線神經語音':'offline neural','離線基本語音':'offline basic','自然語音（線上）':'online natural','語音':'audio'}
+REASONS = {'線上語音未安裝':'online voice not installed: tap Update on the tile','缺少 mpg123':'mpg123 missing','線上語音無回應':'online voice unreachable'}
+
 def english(text):
-    if text.startswith('正在播放 · '):
-        return 'Playing · ' + {'離線神經語音':'offline neural','離線基本語音':'offline basic','自然語音（線上）':'online natural','語音':'audio'}.get(text.split(' · ',1)[1],text.split(' · ',1)[1])
+    for prefix, label in (('正在播放 · ', 'Playing · '), ('播放完成 · ', 'Finished · ')):
+        if text.startswith(prefix):
+            voice, _, reason = text[len(prefix):].partition('（')
+            if voice+'（'+reason in VOICES:
+                return label + VOICES[voice+'（'+reason]
+            return label + VOICES.get(voice, voice) + (' ('+REASONS.get(reason.rstrip('）'), reason.rstrip('）'))+')' if reason else '')
     return TRANSLATIONS.get(text, text)
 
 HOME = Path.home()
@@ -379,7 +386,10 @@ class Reader:
                 with self.player_lock:
                     if generation == self.generation:
                         self.process = None
-                        self.state.update(playing=False, status='播放完成')
+                        # Keep the reason on screen when the natural voice was not the one heard.
+                        used = Path(str(wav) + '.backend')
+                        used = used.read_text() if used.exists() else ''
+                        self.state.update(playing=False, status='播放完成 · '+used if '離線' in used and '（' in used else '播放完成')
                         self.save()
             except Exception as exc:
                 with self.player_lock:
@@ -603,6 +613,7 @@ put "$HOME/.local/share/oma-voice/synthesize.py" <<'OMA_VOICE_FILE_1_END'
 import asyncio
 import json
 import os
+import re
 import subprocess
 import shutil
 from pathlib import Path
@@ -610,26 +621,64 @@ import sys
 
 ROOT = Path(__file__).parent
 
-def offline(text, output):
+# Why online speech was skipped, shown beside the offline voice's name.
+NOT_INSTALLED = '線上語音未安裝'
+NO_MPG123 = '缺少 mpg123'
+UNREACHABLE = '線上語音無回應'
+
+def offline(text, output, reason=''):
+    note = '（'+reason+'）' if reason else ''
     runtime = ROOT / 'tts/sherpa-onnx-v1.13.8-linux-aarch64-shared-cpu/bin/sherpa-onnx-offline-tts'
     model = ROOT / 'tts/vits-piper-zh_CN-huayan-medium'
     if runtime.exists() and (model / 'zh_CN-huayan-medium.onnx').exists():
-        Path(str(output)+'.backend').write_text('離線神經語音')
+        Path(str(output)+'.backend').write_text('離線神經語音'+note)
         os.execv(str(runtime), [str(runtime), '--vits-model='+str(model/'zh_CN-huayan-medium.onnx'),
                  '--vits-tokens='+str(model/'tokens.txt'), '--vits-data-dir='+str(model/'espeak-ng-data'),
                  '--num-threads=2', '--output-filename='+str(output), '--', text])
-    Path(str(output)+'.backend').write_text('離線基本語音')
+    Path(str(output)+'.backend').write_text('離線基本語音'+note)
     os.execvp('espeak-ng', ['espeak-ng', '-v', 'cmn', '-s', '175', '-w', str(output), '--', text])
+
+def pieces(text, limit=1200):
+    # One request per piece: a long reply in one request ran past the time limit and fell back to espeak-ng.
+    parts, current = [], ''
+    for sentence in re.findall(r'[^。！？!?；;\n]*[。！？!?；;\n]+|[^。！？!?；;\n]+', text):
+        while len(sentence) > limit:
+            parts.append(current+sentence[:limit-len(current)])
+            sentence, current = sentence[limit-len(current):], ''
+        if len(current)+len(sentence) > limit:
+            parts.append(current)
+            current = ''
+        current += sentence
+    return [part for part in parts+[current] if part.strip()]
+
+async def fetch(edge_tts, text, voice):
+    audio = b''
+    async for chunk in edge_tts.Communicate(text, voice=voice, rate='-5%').stream():
+        if chunk['type'] == 'audio':
+            audio += chunk['data']
+    if not audio:
+        raise RuntimeError('no audio')
+    return audio
 
 async def online(text, output):
     import edge_tts
+    if not shutil.which('mpg123'):
+        raise FileNotFoundError('mpg123')
     mp3 = output.with_suffix('.mp3')
     try:
-        voice = 'zh-CN-XiaoxiaoNeural' if any('\u3400' <= c <= '\u9fff' for c in text) else 'en-US-AriaNeural'
-        await asyncio.wait_for(edge_tts.Communicate(text, voice=voice, rate='-5%').save(str(mp3)), timeout=25)
-        if not shutil.which('mpg123'):
-            raise RuntimeError('mpg123 is required for online speech')
-        subprocess.run(['mpg123', '-q', '-w', str(output), str(mp3)], check=True, timeout=30)
+        voice = 'zh-CN-XiaoxiaoNeural' if any('㐀' <= c <= '鿿' for c in text) else 'en-US-AriaNeural'
+        with mp3.open('wb') as audio:
+            for part in pieces(text):
+                for attempt in range(3):
+                    try:
+                        audio.write(await asyncio.wait_for(fetch(edge_tts, part, voice), timeout=30))
+                        break
+                    except Exception:
+                        # A dropped connection is common on a phone; espeak-ng is the last resort.
+                        if attempt == 2:
+                            raise
+                        await asyncio.sleep(1)
+        subprocess.run(['mpg123', '-q', '-w', str(output), str(mp3)], check=True, timeout=120)
         Path(str(output)+'.backend').write_text('自然語音（線上）')
     finally:
         mp3.unlink(missing_ok=True)
@@ -640,14 +689,16 @@ if __name__ == '__main__':
     if not text:
         raise SystemExit('沒有可播放的文字')
     config = json.loads((Path.home()/'.config/omalauncher/voice.json').read_text())
+    reason = ''
     if config.get('engine') != 'offline':
         try:
             asyncio.run(online(text, output))
             raise SystemExit(0)
         except Exception as error:
-            print('線上語音暫時不可用，改用離線：'+type(error).__name__, file=sys.stderr)
+            reason = NOT_INSTALLED if isinstance(error, ImportError) else NO_MPG123 if isinstance(error, FileNotFoundError) else UNREACHABLE
+            print('線上語音不可用，改用離線：'+type(error).__name__+' '+str(error)[:200], file=sys.stderr)
             output.unlink(missing_ok=True)
-    offline(text, output)
+    offline(text, output, reason)
 OMA_VOICE_FILE_1_END
 put "$HOME/.local/share/oma-speak/bash.sh" <<'OMA_VOICE_FILE_2_END'
 # Insert at the cursor, preserving any existing input. Never press Enter.
@@ -898,7 +949,7 @@ venv="$share/oma-voice/venv"
 # Stop the old voice service and dictation page; the widget starts the new ones.
 pkill -u "$(id -u)" -f '^[^ ]*python[0-9.]* .*/oma_voice\.py daemon$' || true
 pkill -u "$(id -u)" -f '^[^ ]*python[0-9.]* .*/oma-speak/server\.py$' || true
-printf '%s' '3.1-af2f8b7a' > "$HOME/.local/share/oma-voice/store-version"
+printf '%s' '3.1-226dd9d4' > "$HOME/.local/share/oma-voice/store-version"
 say done
 """) }
       Button { fill: width; height: 40; text: zh ? "English" : "中文"; onTap: run(zh ? "mkdir -p ~/.config/omalauncher && printf en > ~/.config/omalauncher/voice-ui-language" : "mkdir -p ~/.config/omalauncher && printf zh > ~/.config/omalauncher/voice-ui-language") }

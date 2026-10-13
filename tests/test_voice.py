@@ -35,17 +35,21 @@ class VoiceTests(unittest.TestCase):
                 reader.bind(first)
                 reader.config['auto'] = False
                 second,new = session('New reply')
-                os.utime(new,(old.stat().st_mtime+10,old.stat().st_mtime+10))
+                # Appending resets the time; on a coarse clock it can tie with the older file.
+                newest = lambda: os.utime(new,(old.stat().st_mtime+10,old.stat().st_mtime+10))
+                newest()
                 reader.poll()
                 self.assertEqual(reader.config['thread'],second)
                 self.assertEqual(reader.state['full'],'New reply')
                 self.assertFalse(reader.state['playing'])
                 with new.open('a') as f:
                     f.write(json.dumps({'type':'event_msg','payload':{'type':'task_started'}})+'\n')
+                newest()
                 reader.poll()
                 self.assertTrue(reader.state['awaiting'])
                 with new.open('a') as f:
                     f.write(json.dumps({'type':'event_msg','timestamp':'2026-10-13T00:01:00Z','payload':{'type':'task_complete','turn_id':'next','last_agent_message':'Fresh completion'}})+'\n')
+                newest()
                 reader.poll()
                 self.assertEqual(reader.state['full'],'Fresh completion')
                 self.assertFalse(reader.state['awaiting'])
@@ -96,6 +100,20 @@ class VoiceTests(unittest.TestCase):
             self.assertEqual((home/build_store.MARKER).read_text(),build_store.payload_id())
             self.assertTrue(os.access(home/'.local/bin/oma-voice',os.X_OK))
             self.assertTrue(list((home/'.local/share/oma-voice/install-backups').rglob('oma_voice.py')))
+
+    def test_long_text_is_split_for_online_speech_and_fallback_is_explained(self):
+        spec = importlib.util.spec_from_file_location('synthesize', ROOT/'voice/synthesize.py')
+        synthesize = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(synthesize)
+        text = '這是一句測試。'*900 + 'x'*3000
+        parts = synthesize.pieces(text)
+        self.assertEqual(''.join(parts),text)
+        self.assertTrue(all(len(part) <= 1200 for part in parts))
+        self.assertEqual(synthesize.pieces('短句'),['短句'])
+        self.assertEqual(voice.english('正在播放 · 自然語音（線上）'),'Playing · online natural')
+        self.assertEqual(voice.english('播放完成 · 離線基本語音（'+synthesize.UNREACHABLE+'）'),'Finished · offline basic (online voice unreachable)')
+        for reason in (synthesize.NOT_INSTALLED,synthesize.NO_MPG123,synthesize.UNREACHABLE):
+            self.assertIn(reason,voice.REASONS)
 
     def test_store_widgets_are_current_and_within_store_rules(self):
         with tempfile.TemporaryDirectory() as directory:

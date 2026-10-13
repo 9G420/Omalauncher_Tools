@@ -2,6 +2,7 @@
 import asyncio
 import json
 import os
+import re
 import subprocess
 import shutil
 from pathlib import Path
@@ -9,26 +10,64 @@ import sys
 
 ROOT = Path(__file__).parent
 
-def offline(text, output):
+# Why online speech was skipped, shown beside the offline voice's name.
+NOT_INSTALLED = '線上語音未安裝'
+NO_MPG123 = '缺少 mpg123'
+UNREACHABLE = '線上語音無回應'
+
+def offline(text, output, reason=''):
+    note = '（'+reason+'）' if reason else ''
     runtime = ROOT / 'tts/sherpa-onnx-v1.13.8-linux-aarch64-shared-cpu/bin/sherpa-onnx-offline-tts'
     model = ROOT / 'tts/vits-piper-zh_CN-huayan-medium'
     if runtime.exists() and (model / 'zh_CN-huayan-medium.onnx').exists():
-        Path(str(output)+'.backend').write_text('離線神經語音')
+        Path(str(output)+'.backend').write_text('離線神經語音'+note)
         os.execv(str(runtime), [str(runtime), '--vits-model='+str(model/'zh_CN-huayan-medium.onnx'),
                  '--vits-tokens='+str(model/'tokens.txt'), '--vits-data-dir='+str(model/'espeak-ng-data'),
                  '--num-threads=2', '--output-filename='+str(output), '--', text])
-    Path(str(output)+'.backend').write_text('離線基本語音')
+    Path(str(output)+'.backend').write_text('離線基本語音'+note)
     os.execvp('espeak-ng', ['espeak-ng', '-v', 'cmn', '-s', '175', '-w', str(output), '--', text])
+
+def pieces(text, limit=1200):
+    # One request per piece: a long reply in one request ran past the time limit and fell back to espeak-ng.
+    parts, current = [], ''
+    for sentence in re.findall(r'[^。！？!?；;\n]*[。！？!?；;\n]+|[^。！？!?；;\n]+', text):
+        while len(sentence) > limit:
+            parts.append(current+sentence[:limit-len(current)])
+            sentence, current = sentence[limit-len(current):], ''
+        if len(current)+len(sentence) > limit:
+            parts.append(current)
+            current = ''
+        current += sentence
+    return [part for part in parts+[current] if part.strip()]
+
+async def fetch(edge_tts, text, voice):
+    audio = b''
+    async for chunk in edge_tts.Communicate(text, voice=voice, rate='-5%').stream():
+        if chunk['type'] == 'audio':
+            audio += chunk['data']
+    if not audio:
+        raise RuntimeError('no audio')
+    return audio
 
 async def online(text, output):
     import edge_tts
+    if not shutil.which('mpg123'):
+        raise FileNotFoundError('mpg123')
     mp3 = output.with_suffix('.mp3')
     try:
-        voice = 'zh-CN-XiaoxiaoNeural' if any('\u3400' <= c <= '\u9fff' for c in text) else 'en-US-AriaNeural'
-        await asyncio.wait_for(edge_tts.Communicate(text, voice=voice, rate='-5%').save(str(mp3)), timeout=25)
-        if not shutil.which('mpg123'):
-            raise RuntimeError('mpg123 is required for online speech')
-        subprocess.run(['mpg123', '-q', '-w', str(output), str(mp3)], check=True, timeout=30)
+        voice = 'zh-CN-XiaoxiaoNeural' if any('㐀' <= c <= '鿿' for c in text) else 'en-US-AriaNeural'
+        with mp3.open('wb') as audio:
+            for part in pieces(text):
+                for attempt in range(3):
+                    try:
+                        audio.write(await asyncio.wait_for(fetch(edge_tts, part, voice), timeout=30))
+                        break
+                    except Exception:
+                        # A dropped connection is common on a phone; espeak-ng is the last resort.
+                        if attempt == 2:
+                            raise
+                        await asyncio.sleep(1)
+        subprocess.run(['mpg123', '-q', '-w', str(output), str(mp3)], check=True, timeout=120)
         Path(str(output)+'.backend').write_text('自然語音（線上）')
     finally:
         mp3.unlink(missing_ok=True)
@@ -39,11 +78,13 @@ if __name__ == '__main__':
     if not text:
         raise SystemExit('沒有可播放的文字')
     config = json.loads((Path.home()/'.config/omalauncher/voice.json').read_text())
+    reason = ''
     if config.get('engine') != 'offline':
         try:
             asyncio.run(online(text, output))
             raise SystemExit(0)
         except Exception as error:
-            print('線上語音暫時不可用，改用離線：'+type(error).__name__, file=sys.stderr)
+            reason = NOT_INSTALLED if isinstance(error, ImportError) else NO_MPG123 if isinstance(error, FileNotFoundError) else UNREACHABLE
+            print('線上語音不可用，改用離線：'+type(error).__name__+' '+str(error)[:200], file=sys.stderr)
             output.unlink(missing_ok=True)
-    offline(text, output)
+    offline(text, output, reason)
