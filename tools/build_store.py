@@ -71,7 +71,8 @@ def setup_script():
         '# Without the network this fails and speech stays offline (espeak-ng) until the next setup.',
         '"$venv/bin/python" -m pip install --quiet --disable-pip-version-check %s || echo "edge-tts was not installed"' % requirement(),
         '# Stop the old voice service and dictation page; the widget starts the new ones.',
-        *('pkill -u "$(id -u)" -f \'%s\' || true' % pattern for pattern in SERVICES),
+        # No -u: under proot id says 0 while the processes keep the app's real user, so it matched nothing.
+        *('pkill -f \'%s\' || true' % pattern for pattern in SERVICES),
         'printf \'%%s\' \'%s\' > "$HOME/%s"' % (payload_id(), MARKER),
         'say done',
     ]

@@ -944,8 +944,8 @@ venv="$share/oma-voice/venv"
 # Without the network this fails and speech stays offline (espeak-ng) until the next setup.
 "$venv/bin/python" -m pip install --quiet --disable-pip-version-check edge-tts==7.2.8 || echo "edge-tts was not installed"
 # Stop the old voice service and dictation page; the widget starts the new ones.
-pkill -u "$(id -u)" -f '^[^ ]*python[0-9.]* .*/oma_voice\.py daemon$' || true
-pkill -u "$(id -u)" -f '^[^ ]*python[0-9.]* .*/oma-speak/server\.py$' || true
+pkill -f '^[^ ]*python[0-9.]* .*/oma_voice\.py daemon$' || true
+pkill -f '^[^ ]*python[0-9.]* .*/oma-speak/server\.py$' || true
 printf '%s' '3.1-226dd9d4' > "$HOME/.local/share/oma-voice/store-version"
 say done
 """) }
