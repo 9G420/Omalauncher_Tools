@@ -50,24 +50,20 @@ class InstallTests(unittest.TestCase):
             self.assertEqual(json.loads(result.stdout)['entries'], 0)
             self.assertEqual(list((Path(directory) / 'oma-devlogs/journal').glob('*.md')), [])
 
-    def test_rename_preserves_legacy_data_and_command(self):
+    def test_setup_leaves_other_folders_and_widgets_alone(self):
         with tempfile.TemporaryDirectory() as directory:
             home = Path(directory)
-            old = home / 'oma-devdesk/journal/2026-10.md'
-            old.parent.mkdir(parents=True)
-            old.write_text('# Journal\n- 2026-10-14 08:00 · legacy data\n')
+            other = home / 'oma-devdesk/journal/2026-10.md'
+            other.parent.mkdir(parents=True)
+            other.write_text('# Journal\n')
             widget = home / '.config/omalauncher/widgets/65-dev-desk.owl'
             widget.parent.mkdir(parents=True)
             widget.write_text('widget "DEV DESK" {}')
             env = dict(os.environ, HOME=directory)
-            subprocess.run([sys.executable, str(ROOT / 'install.py'), '--skip-deps'], env=env, check=True, capture_output=True)
-            new = home / 'oma-devlogs/journal/2026-10.md'
-            self.assertIn('legacy data', new.read_text())
-            self.assertFalse(old.exists())
-            self.assertFalse(widget.exists())
-            self.assertTrue(list((home / '.local/share/oma-devlogs/install-backups').rglob('65-dev-desk.owl')))
-            result = subprocess.run([sys.executable, str(home / '.local/bin/oma-devdesk'), 'status'], env=env, capture_output=True, text=True, check=True)
-            self.assertEqual(json.loads(result.stdout)['entries'], 1)
+            subprocess.run(['bash', '-c', build.setup_script()], env=env, check=True, capture_output=True)
+            self.assertTrue(other.exists())
+            self.assertTrue(widget.exists())
+            self.assertFalse((home / '.local/bin/oma-devdesk').exists())
 
     def test_generated_store_widget_is_current_and_portable(self):
         text = build.render()
@@ -78,6 +74,7 @@ class InstallTests(unittest.TestCase):
         self.assertIn('${sh(value)}', text)
         self.assertIn('state errorLevel = "error" persist', text)
         self.assertIn('Settings', text)
+        self.assertIn('requires { pacman: ["python", "bash", "coreutils", "less", "micro"] }', text)
 
 
 if __name__ == '__main__':

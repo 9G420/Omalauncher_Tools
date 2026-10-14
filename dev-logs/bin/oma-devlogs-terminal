@@ -1,5 +1,9 @@
 #!/bin/bash
 # Keep terminal diagnostics for DEV LOGS; do not record terminal input/output.
+if [ ! -x /usr/bin/foot ]; then
+    echo "oma-devlogs-terminal needs foot: pacman -S foot" >&2
+    exit 127
+fi
 log_dir="$HOME/oma-devlogs/logs/terminals"
 umask 077
 if ! mkdir -p -- "$log_dir"; then
@@ -22,7 +26,7 @@ if kill -0 "$foot_pid" 2>/dev/null; then
 fi
 wait "$tee_pid" 2>/dev/null
 if [ "$result" -ne 0 ]; then
-    printf '%s · foot 異常退出：exit=%s（128 以上通常表示信號；例如 137=SIGKILL、139=SIGSEGV）\n' "$(date -Is)" "$result" >> "$log_file"
+    printf '%s · foot exited abnormally: exit=%s (128 and above usually means a signal, e.g. 137=SIGKILL, 139=SIGSEGV)\n' "$(date -Is)" "$result" >> "$log_file"
 fi
 [ -s "$log_file" ] || rm -f -- "$log_file"
 exit "$result"

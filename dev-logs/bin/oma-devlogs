@@ -16,13 +16,21 @@ from pathlib import Path
 ROOT = Path.home() / "oma-devlogs"
 NOTES = ROOT / "notes"
 JOURNAL = ROOT / "journal"
+# The widget passes --lang; a command typed by hand or by an agent follows the locale.
+LANGUAGE = "zh" if os.environ.get("LC_ALL", os.environ.get("LANG", "")).lower().startswith("zh") else "en"
+
+
+def t(zh: str, en: str) -> str:
+    return zh if LANGUAGE == "zh" else en
 
 
 def ensure_dirs() -> None:
     for path in (ROOT, NOTES, JOURNAL):
         path.mkdir(parents=True, exist_ok=True)
         try:
-            path.chmod(0o700)
+            # Called on every refresh: leave a folder that is already private untouched.
+            if path.stat().st_mode & 0o777 != 0o700:
+                path.chmod(0o700)
         except OSError:
             pass
 
@@ -57,6 +65,13 @@ def read_latest() -> tuple[str, str]:
     return entries[-1] if entries else (dt.datetime.now().astimezone().date().isoformat(), "")
 
 
+def inside_home(path: Path) -> None:
+    try:
+        path.relative_to(Path.home().resolve())
+    except ValueError:
+        raise ValueError(t("只能使用家目錄內的路徑", "Only paths inside your home can be used")) from None
+
+
 def status() -> None:
     ensure_dirs()
     entries = journal_entries()
@@ -78,9 +93,9 @@ def status() -> None:
 def browse(raw: str, offset: int = 0) -> None:
     try:
         path = Path(raw).expanduser().resolve()
-        path.relative_to(Path.home().resolve())
+        inside_home(path)
         if not path.is_dir():
-            raise ValueError("不是目錄")
+            raise ValueError(t("不是目錄", "Not a directory"))
         items = sorted(path.iterdir(), key=lambda p: (not p.is_dir(), p.name.casefold()))
         items = [p for p in items if not p.name.startswith(".")]
         offset = max(0, offset)
@@ -103,12 +118,12 @@ def history(day: str = "", offset: int = 0) -> None:
     days = sorted({day for day, _ in all_entries}, reverse=True)
     selected = day or (days[0] if days else "")
     if selected and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", selected):
-        raise SystemExit("日期格式必須為 YYYY-MM-DD")
+        raise SystemExit(t("日期格式必須為 YYYY-MM-DD", "The date must be YYYY-MM-DD"))
     if selected:
         try:
             dt.date.fromisoformat(selected)
         except ValueError:
-            raise SystemExit("日期格式必須為有效的 YYYY-MM-DD")
+            raise SystemExit(t("日期格式必須為有效的 YYYY-MM-DD", "The date must be a real YYYY-MM-DD date"))
     entries = [text for day, text in reversed(all_entries) if day == selected]
     offset = max(0, offset)
     print(json.dumps({"days": days[:500], "day": selected, "entries": entries[offset:offset + 40],
@@ -130,19 +145,19 @@ def refresh_widget() -> None:
                 continue
         except OSError:
             continue
-        for args in (["set", "day", ""], ["set", "logOffset", "0"], ["refresh"]):
-            try:
-                subprocess.run([sender, str(path), *args], stdout=subprocess.DEVNULL,
-                               stderr=subprocess.DEVNULL, timeout=2, check=False)
-            except (OSError, subprocess.TimeoutExpired):
-                break
+        # Only a refresh: the day someone is reading stays on screen.
+        try:
+            subprocess.run([sender, str(path), "refresh"], stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL, timeout=2, check=False)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
 
 
 def log_entry(text: str) -> None:
     ensure_dirs()
     clean = " ".join(text.replace("\x00", "").split()).strip()
     if not clean:
-        raise SystemExit("請輸入日誌內容。")
+        raise SystemExit(t("請輸入日誌內容。", "Write something to log."))
     now = dt.datetime.now().astimezone()
     month = now.strftime('%Y-%m')
     path = JOURNAL / f"{month}.md"
@@ -150,13 +165,13 @@ def log_entry(text: str) -> None:
         fcntl.flock(lock, fcntl.LOCK_EX)
         with path.open("a", encoding="utf-8") as stream:
             if stream.tell() == 0:
-                stream.write(f"# 開發日誌 · {month}\n\n")
+                stream.write(f"# {t('開發日誌', 'Dev log')} · {month}\n\n")
             stream.write(f"- {now.strftime('%Y-%m-%d %H:%M')} · {clean}\n")
     try:
         path.chmod(0o600)
     except OSError:
         pass
-    print(f"已記錄 → {path.relative_to(ROOT)}", flush=True)
+    print(f"{t('已儲存', 'Saved')} → {path.relative_to(ROOT)}", flush=True)
     refresh_widget()
 
 
@@ -171,7 +186,7 @@ def create_note(title: str, body: str = "") -> Path:
     ensure_dirs()
     clean_title = " ".join(title.split()).strip()
     if not clean_title:
-        raise SystemExit("標題不能為空。")
+        raise SystemExit(t("標題不能為空。", "The title cannot be empty."))
     stem = slugify(clean_title)
     path = NOTES / f"{stem}.md"
     serial = 2
@@ -182,7 +197,7 @@ def create_note(title: str, body: str = "") -> Path:
     if body.strip():
         content += body.strip() + "\n"
     else:
-        content += "## 想法\n\n\n## 下一步\n\n- [ ] \n"
+        content += t("## 想法\n\n\n## 下一步\n\n- [ ] \n", "## Ideas\n\n\n## Next steps\n\n- [ ] \n")
     path.write_text(content, encoding="utf-8")
     try:
         path.chmod(0o600)
@@ -193,9 +208,9 @@ def create_note(title: str, body: str = "") -> Path:
 
 def home_directory(raw: str) -> Path:
     path = Path(raw).expanduser().resolve(strict=True)
-    path.relative_to(Path.home().resolve())
+    inside_home(path)
     if not path.is_dir():
-        raise ValueError("不是目錄")
+        raise ValueError(t("不是目錄", "Not a directory"))
     return path
 
 
@@ -205,7 +220,7 @@ def create_markdown(raw: str, title: str) -> Path:
     if title.lower().endswith('.md'):
         title = title[:-3].strip()
     if not title or title.startswith('.') or any(c in title for c in ('/', '\\', '\x00', '\n', '\r')):
-        raise ValueError("請輸入檔名，不含路徑或換行。")
+        raise ValueError(t("請輸入檔名，不含路徑或換行。", "Enter a file name without a path or line break."))
     stem = title[:120]
     for serial in range(1, 10000):
         path = folder / (stem + (f'-{serial}' if serial > 1 else '') + '.md')
@@ -216,17 +231,17 @@ def create_markdown(raw: str, title: str) -> Path:
             return path
         except FileExistsError:
             continue
-    raise ValueError("同名檔案過多，請換一個檔名。")
+    raise ValueError(t("同名檔案過多，請換一個檔名。", "Too many files with this name; choose another."))
 
 
 def trash_markdown(raw: str) -> Path:
     supplied = Path(raw).expanduser()
     if supplied.is_symlink():
-        raise ValueError("不刪除符號連結，請開啟實際目錄後操作。")
+        raise ValueError(t("不刪除符號連結，請開啟實際目錄後操作。", "Symbolic links are not deleted; open the real folder instead."))
     path = supplied.resolve(strict=True)
-    path.relative_to(Path.home().resolve())
+    inside_home(path)
     if not path.is_file() or path.suffix.lower() != '.md':
-        raise ValueError("只能刪除 Markdown 檔案。")
+        raise ValueError(t("只能刪除 Markdown 檔案。", "Only Markdown files can be deleted."))
     trash = Path.home() / '.local/share/oma-devlogs/trash'
     trash.mkdir(parents=True, exist_ok=True, mode=0o700)
     token = uuid.uuid4().hex
@@ -244,7 +259,8 @@ def trash_markdown(raw: str) -> Path:
 
 def need_gum() -> None:
     if shutil.which("gum") is None:
-        raise SystemExit("互動工作台需要 gum；可先用 `oma-devlogs log '內容'` 記錄日誌。")
+        raise SystemExit(t("互動選單需要 gum（pacman -S gum）；也可以用 `oma-devlogs log '內容'` 記錄日誌。",
+                           "The interactive menu needs gum (pacman -S gum); `oma-devlogs log 'text'` works without it."))
 
 
 def gum_input(prompt: str, placeholder: str = "") -> str:
@@ -267,40 +283,44 @@ def interactive() -> None:
     need_gum()
     while True:
         print("\033[2J\033[H", end="")
-        print("\033[38;5;45mDEV LOGS\033[0m   本機 Markdown · 開發日誌")
+        print("\033[38;5;45mDEV LOGS\033[0m   " + t("本機 Markdown · 開發日誌", "Local Markdown · dev log"))
         print(f"{ROOT}\n")
-        options = ["快速記日誌", "新增 Markdown", "編輯 Markdown", "瀏覽筆記", "查看本月日誌", "歷史日誌", "退出"]
-        choice = subprocess.run(["gum", "choose", *options], text=True, check=False, capture_output=True)
-        if choice.returncode != 0 or choice.stdout.strip() == "退出":
+        menu = {"快速記日誌": "Quick log", "新增 Markdown": "New Markdown", "編輯 Markdown": "Edit Markdown",
+                "瀏覽筆記": "Browse notes", "查看本月日誌": "This month's log", "歷史日誌": "Earlier logs", "退出": "Quit"}
+        labels = {t(zh, en): zh for zh, en in menu.items()}
+        choice = subprocess.run(["gum", "choose", *labels], text=True, check=False, capture_output=True)
+        # The branches below keep the Chinese keys whatever language is shown.
+        selected = labels.get(choice.stdout.strip(), "退出")
+        if choice.returncode != 0 or selected == "退出":
             return
-        selected = choice.stdout.strip()
+        back = t("\nEnter 返回…", "\nEnter to go back…")
         if selected == "快速記日誌":
-            text = gum_input("日誌 › ", "完成了什麼？")
+            text = gum_input(t("日誌 › ", "Log › "), t("完成了什麼？", "What was done?"))
             if text:
                 log_entry(text)
-                input("\nEnter 返回…")
+                input(back)
         elif selected == "新增 Markdown":
-            title = gum_input("標題 › ", "例如：測試計畫")
+            title = gum_input(t("標題 › ", "Title › "), t("例如：測試計畫", "For example: test plan"))
             if title:
                 body_result = subprocess.run(
-                    ["gum", "write", "--placeholder", "在這裡寫 Markdown…", "--header", title],
+                    ["gum", "write", "--placeholder", t("在這裡寫 Markdown…", "Write Markdown here…"), "--header", title],
                     text=True,
                     check=False,
                     capture_output=True,
                 )
                 if body_result.returncode == 0:
                     path = create_note(title, body_result.stdout)
-                    print(f"\n已建立 → {path.relative_to(ROOT)}")
-                    input("\nEnter 返回…")
+                    print(f"\n{t('已建立', 'Created')} → {path.relative_to(ROOT)}")
+                    input(back)
         elif selected in {"編輯 Markdown", "瀏覽筆記"}:
             files = sorted(NOTES.glob("*.md"))
             if not files:
-                print("\n目前沒有筆記。")
-                input("\nEnter 返回…")
+                print(t("\n目前沒有筆記。", "\nNo notes yet."))
+                input(back)
                 continue
             listing = "\n".join(str(p) for p in files)
             chosen = subprocess.run(
-                ["gum", "filter", "--placeholder", "搜尋筆記…"],
+                ["gum", "filter", "--placeholder", t("搜尋筆記…", "Search notes…")],
                 input=listing,
                 text=True,
                 check=False,
@@ -332,17 +352,21 @@ def interactive() -> None:
                 if chosen.returncode == 0 and chosen.stdout.strip() in {p.name for p in files}:
                     pager(JOURNAL / chosen.stdout.strip())
             else:
-                input("沒有歷史日誌。Enter 返回…")
+                input(t("沒有歷史日誌。Enter 返回…", "No earlier logs. Enter to go back…"))
         elif selected == "查看本月日誌":
             path = JOURNAL / f"{dt.datetime.now().astimezone().strftime('%Y-%m')}.md"
             if path.exists():
                 pager(path)
             else:
-                print("\n本月還沒有日誌。")
-                input("\nEnter 返回…")
+                print(t("\n本月還沒有日誌。", "\nNo log this month yet."))
+                input(back)
 
 
 def main(argv: list[str]) -> None:
+    global LANGUAGE
+    if len(argv) >= 2 and argv[0] == "--lang":
+        LANGUAGE = "zh" if argv[1] == "zh" else "en"
+        argv = argv[2:]
     ensure_dirs()
     if not argv or argv[0] in {"open", "ui"}:
         interactive()
@@ -354,29 +378,30 @@ def main(argv: list[str]) -> None:
         status()
     elif argv[0] == "new-at" and len(argv) == 3:
         try:
-            print(f"已建立 → {create_markdown(argv[1], argv[2])}", flush=True)
+            print(f"{t('已建立', 'Created')} → {create_markdown(argv[1], argv[2])}", flush=True)
         except (OSError, ValueError) as error:
             raise SystemExit(str(error))
     elif argv[0] == "delete-md" and len(argv) == 2:
         try:
-            path = trash_markdown(argv[1])
-            print(f"已移至回收區 → {path}", flush=True)
+            trash_markdown(argv[1])
+            print(t("已移至回收區", "Moved to trash"), flush=True)
         except (OSError, ValueError) as error:
             raise SystemExit(str(error))
     elif argv[0] in {"log", "add"}:
         log_entry(" ".join(argv[1:]))
     elif argv[0] in {"new", "note"}:
         if len(argv) < 2:
-            raise SystemExit("用法：oma-devlogs new <標題>")
+            raise SystemExit(t("用法：oma-devlogs new <標題>", "Usage: oma-devlogs new <title>"))
         path = create_note(" ".join(argv[1:]))
         print(path)
     elif argv[0] == "list":
         for path in sorted(NOTES.glob("*.md")):
             print(path.relative_to(ROOT))
     elif argv[0] == "help":
-        print("oma-devlogs [open|status|browse <目錄> [偏移]|history [日期] [偏移]|log <文字>|new <標題>|new-at <目錄> <檔名>|delete-md <檔案>|list]")
+        print(t("oma-devlogs [--lang en|zh] [open|status|browse <目錄> [偏移]|history [日期] [偏移]|log <文字>|new <標題>|new-at <目錄> <檔名>|delete-md <檔案>|list]",
+                "oma-devlogs [--lang en|zh] [open|status|browse <folder> [offset]|history [date] [offset]|log <text>|new <title>|new-at <folder> <name>|delete-md <file>|list]"))
     else:
-        raise SystemExit(f"未知指令：{argv[0]}（用 `oma-devlogs help` 查看）")
+        raise SystemExit(t(f"未知指令：{argv[0]}（用 `oma-devlogs help` 查看）", f"Unknown command: {argv[0]} (see `oma-devlogs help`)"))
 
 
 if __name__ == "__main__":

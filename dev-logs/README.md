@@ -4,9 +4,9 @@ Development logs, project notes and Linux diagnostics for Omalauncher. English a
 
 ## Preview
 
-Screenshots use fixed English examples rendered by the launcher. No personal journal, project files or error history are included.
+Screenshots use fixed English examples rendered by the launcher. No personal log entries, project files or diagnostics are included.
 
-| Home widget | Daily journal |
+| Home widget | Logs by day |
 | --- | --- |
 | [![DEV LOGS home widget](docs/screenshots/dev-logs.png)](docs/screenshots/dev-logs.png) | [![Daily development logs](docs/screenshots/logs.png)](docs/screenshots/logs.png) |
 
@@ -19,13 +19,13 @@ Screenshots use fixed English examples rendered by the launcher. No personal jou
 - **Logs:** write concise development milestones. Browse and switch by day, with 40 entries per page. Storage uses one Markdown file per month, with a full date and time on each entry.
 - **Files:** browse inside your home directory; create, view and edit Markdown; confirm deletion before moving a file into recoverable local trash. Hidden files are omitted; file browsing uses 40 items per page.
 - **System:** collect local widget, style, guest-shell and selected service diagnostics. Filter **Errors / Warnings / All**; Errors is the default. Expand a record and copy only that report. The collector keeps the newest 500 records.
-- **Settings:** choose English on the left or 繁體中文 on the right. Copy project instructions for Codex or Claude to record important development changes, verification results and unresolved problems in 1–3 sentences.
+- **Settings:** choose English on the left or 繁體中文 on the right; messages, copied reports and the heading of a new log file follow it. Copy project instructions for Codex or Claude to record important development changes, verification results and unresolved problems in 1–3 sentences.
 
-Agent logging works when an agent with local command access saves and follows the copied instructions. DEV LOGS does not capture every reply, summarize conversations automatically, or call an AI API. General Q&A, routine checks and trivial edits should be skipped. The **Auto updated** time indicates that the displayed data was refreshed, not that a new journal entry was generated.
+Agent logging works when an agent with local command access saves and follows the copied instructions. DEV LOGS does not capture every reply, summarize conversations automatically, or call an AI API. General Q&A, routine checks and trivial edits should be skipped. The **Auto updated** time indicates that the displayed data was refreshed, not that a new log entry was written.
 
 ## Install from GitHub
 
-Requires Omalauncher with Arch Linux and OWL 6. The installer can install `python`, `bash`, `coreutils`, `gum`, `less`, `micro` and `foot` through pacman.
+Requires Omalauncher with Arch Linux and OWL 6. The installer can install `python`, `bash`, `coreutils`, `less` and `micro` through pacman. Two extras are optional and not installed for you: `gum` for the menu of `oma-devlogs open`, and `foot` for `oma-devlogs-terminal`.
 
 ```sh
 git clone --branch dev-logs https://github.com/WeeboWIZ/Omalauncher_Tools.git
@@ -35,15 +35,13 @@ python dev-logs/install.py
 
 Use `python dev-logs/install.py --skip-deps` only when those packages are already available. This installer installs DEV LOGS independently; the repository's root `install.py` installs the voice and dictation tools.
 
-For an update, pull this branch and rerun the same installer. Existing notes, monthly journals, legacy daily journals and error history are preserved. Replaced programs are backed up beneath `~/.local/share/oma-devlogs/install-backups/`. Updates do not edit your agent instructions.
-
-The renamed local prototype's `~/oma-devdesk` data folder is moved to `~/oma-devlogs` when the destination does not exist. If both folders already exist, installation stops rather than overwrite either. The old `oma-devdesk` command remains a compatibility alias for existing agent rules.
+For an update, pull this branch and rerun the same installer. Existing notes, monthly log files, older daily log files and collected diagnostics are preserved. Replaced programs are backed up beneath `~/.local/share/oma-devlogs/install-backups/`. Updates do not edit your agent instructions.
 
 ## Install from the widget store
 
 The submission folder is [`store/widgets/weebowiz/dev-logs/`](../store/widgets/weebowiz/dev-logs/). It is prepared in this branch; its presence here does not mean it has been submitted or approved by the store.
 
-After importing `widget.owl`, tap **Set up**. The widget contains the helper programs; setup writes them to `~/.local/bin/` and `~/.local/share/oma-devlogs/`. It creates empty workspace folders and never seeds a sample journal. **Update** replaces program files after a widget update. Setup does not download or run another script, change shell startup files, or replace the system terminal. Setup output is saved at `~/.cache/oma-devlogs/setup.log`.
+After importing `widget.owl`, tap **Set up**. The widget contains the helper programs; setup writes them to `~/.local/bin/` and `~/.local/share/oma-devlogs/`. It creates empty workspace folders and never adds sample log entries. **Update** replaces program files after a widget update. Setup does not download or run another script, change shell startup files, or replace the system terminal. Setup output is saved at `~/.cache/oma-devlogs/setup.log`.
 
 ## Set up agent logging
 
@@ -68,7 +66,7 @@ Dates above are examples. Agent instructions should require real results, state 
 ```text
 ~/oma-devlogs/
 ├── notes/                  Markdown notes
-├── journal/YYYY-MM.md      Monthly storage, daily browsing
+├── journal/YYYY-MM.md      Development log: one file per month, browsed by day
 └── logs/
     ├── system-errors.sqlite3
     └── terminals/          Optional terminal diagnostics
@@ -78,7 +76,7 @@ Markdown editing opens `micro` (Ctrl+S saves; Ctrl+Q exits). Deleted Markdown fi
 
 ## Diagnostics and privacy
 
-The collector reads local widget `.errors/`, style `errors.txt`, `/tmp/.guest-shell-err-*`, existing terminal diagnostic files and error contexts in the voice, dictation and pixel-console service logs. It runs while the widget page is active; changes to files are picked up on the next refresh. It does not access Android logcat, general terminal screen contents, Codex/Claude conversations or agent API credentials. Nothing is uploaded automatically. Copying a report puts its text on the Android clipboard for you to share.
+The collector reads local widget `.errors/`, style `errors.txt`, `/tmp/.guest-shell-err-*`, existing terminal diagnostic files and error contexts in the voice, dictation and pixel-console service logs. It has no background service: the widget runs it once a minute while its page is on screen, and when you tap **Refresh**. A pass that finds nothing new does not write to the database. It does not access Android logcat, general terminal screen contents, Codex/Claude conversations or agent API credentials. Nothing is uploaded automatically. Copying a report puts its text on the Android clipboard for you to share.
 
 Terminal logging is opt-in. To open a terminal that saves its stderr and abnormal exit code, run:
 
@@ -86,7 +84,7 @@ Terminal logging is opt-in. To open a terminal that saves its stderr and abnorma
 ~/.local/bin/oma-devlogs-terminal
 ```
 
-This helper invokes `/usr/bin/foot` without replacing it. It does not record terminal input or ordinary stdout. Existing terminals and terminals opened by other entry points are not automatically captured. Raw terminal files are not automatically deleted; only the collected database history is limited to 500 events. Logs may contain sensitive text printed by other programs, so inspect a report before sharing it.
+This helper needs `foot` (`pacman -S foot`) and invokes `/usr/bin/foot` without replacing it. It does not record terminal input or ordinary stdout. Existing terminals and terminals opened by other entry points are not automatically captured. Raw terminal files are not automatically deleted; only the collected database history is limited to 500 events. Logs may contain sensitive text printed by other programs, so inspect a report before sharing it.
 
 Severity filters use local text rules: explicit errors take priority, known warnings are warnings, and unknown messages stay informational. They assist browsing and do not establish a crash cause. Times indicate collection time, and Android or PRoot termination may leave no diagnostic record.
 

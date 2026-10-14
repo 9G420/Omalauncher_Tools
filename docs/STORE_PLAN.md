@@ -89,7 +89,16 @@
 ## DEV LOGS（dev-logs 分支）
 
 獨立套件在 `dev-logs/`，安裝入口 `python dev-logs/install.py`；不改動語音工具的安裝流程。
-商店投稿資料夾為 `store/widgets/weebowiz/dev-logs/`，版本 1.8，含內嵌安裝程式與英文預覽圖。
+商店投稿資料夾為 `store/widgets/weebowiz/dev-logs/`，版本 1.9，含內嵌安裝程式與英文預覽圖。
 獨立 README 與五張英文示例截圖在 `dev-logs/docs/screenshots/`；實際筆記、日誌、資料庫及 agent 指示不打包。
-已驗證獨立安裝、保留既有資料、舊名稱相容、月檔與每日瀏覽、Markdown 操作、錯誤等級篩選及單筆報告；商店檢查器通過。
+已驗證獨立安裝、保留既有資料、月檔與每日瀏覽、Markdown 操作、錯誤等級篩選及單筆報告；商店檢查器通過。
 目前只推送至擁有者的工具倉庫分支，未送出 DEV LOGS 的商店 PR。
+
+1.9（投稿前整理，本機已改，待手機複驗）：
+- 沒有新診斷時不寫資料庫；輪詢改為狀態與錯誤每 60 秒、日誌與檔案列表每 5 分鐘（操作時仍立即更新）。
+- 拿掉舊原型 `oma-devdesk` 的資料夾改名、舊小工具刪除與相容指令；安裝只寫入自己的檔案。
+- 程式訊息、複製的報告、日誌標題與筆記範本跟隨介面語言（小工具以 `--lang` 傳入）。
+- 英文用語統一：開發日誌一律稱 log／log entries，系統分頁稱 diagnostics；資料夾 `journal/` 不改名。
+- 預設尺寸改為 3×4，與預覽圖一致。
+- `requires` 只留 `python`、`bash`、`coreutils`、`less`、`micro`；`gum`、`foot` 改為選用。
+- Agent 寫入日誌後只重新整理，不再把畫面跳回最新一天。

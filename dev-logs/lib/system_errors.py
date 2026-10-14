@@ -13,6 +13,7 @@ from contextlib import closing
 ROOT = Path.home() / 'oma-devlogs'
 CONFIG = Path.home() / '.config/omalauncher'
 TERMINALS = ROOT / 'logs/terminals'
+LANGUAGE = 'en'
 
 
 def sources():
@@ -34,13 +35,16 @@ def connect():
     db = sqlite3.connect(dbpath, timeout=5)
     db.execute('CREATE TABLE IF NOT EXISTS cursors (path TEXT PRIMARY KEY, inode INTEGER, offset INTEGER, signature TEXT)')
     db.execute('CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY, time TEXT, source TEXT, text TEXT)')
-    dbpath.chmod(0o600)
+    if dbpath.stat().st_mode & 0o777 != 0o600:
+        dbpath.chmod(0o600)
     return db
 
 
 def collect(db):
     # One transaction protects offsets against simultaneous refreshes.
+    # A pass that finds nothing new changes no row, so the database file is not written.
     db.execute('BEGIN IMMEDIATE')
+    added = False
     try:
         for path, snapshot in sources():
             key = str(path)
@@ -63,28 +67,35 @@ def collect(db):
                 if not service or any(word in text.lower() for word in ('error', 'exception', 'traceback', 'fatal', 'failed', 'panic', 'segfault')):
                     now = dt.datetime.now().astimezone().isoformat(timespec='seconds')
                     db.execute('INSERT INTO events(time,source,text) VALUES(?,?,?)', (now, key, text))
-            db.execute('INSERT OR REPLACE INTO cursors VALUES(?,?,?,?)', (key, stat.st_ino, end, signature))
+                    added = True
+            if old != (stat.st_ino, end, signature):
+                db.execute('INSERT OR REPLACE INTO cursors VALUES(?,?,?,?)', (key, stat.st_ino, end, signature))
         # Missing snapshot files represent cleared errors; allow future recurrences.
         for (key,) in db.execute('SELECT path FROM cursors').fetchall():
             if key.startswith(str(CONFIG)) and not Path(key).exists():
                 db.execute('DELETE FROM cursors WHERE path=?', (key,))
-        db.execute('DELETE FROM events WHERE id NOT IN (SELECT id FROM events ORDER BY id DESC LIMIT 500)')
+        if added:
+            db.execute('DELETE FROM events WHERE id NOT IN (SELECT id FROM events ORDER BY id DESC LIMIT 500)')
         db.commit()
     except BaseException:
         db.rollback()
         raise
 
 
+def t(zh, en):
+    return zh if LANGUAGE == 'zh' else en
+
+
 def single_report(entry):
-    return ('# omalauncher Linux 系統錯誤\n\n'
-            '時間為收集時間；來源檔內容可能早於此時間。\n\n'
-            f"## {entry['time']}\n\n來源：{entry['source']}\n\n" +
+    return (t('# Omalauncher Linux 系統錯誤\n\n時間為收集時間；來源檔內容可能早於此時間。\n\n',
+              '# Omalauncher Linux system error\n\nThe time is when it was collected; the source file may be older.\n\n') +
+            f"## {entry['time']}\n\n{t('來源：', 'Source: ')}{entry['source']}\n\n" +
             ''.join('    ' + line + '\n' for line in entry['text'].splitlines()))
 
 
 def classify(text, source=''):
     '''Classify known diagnostics; unknown messages stay informational.'''
-    if re.search(r'\b(?:error|exception|traceback|fatal|failed|panic|segfault|segmentation fault|enosys)\b|function not implemented|異常退出|錯誤|失敗', text, re.I):
+    if re.search(r'\b(?:error|exception|traceback|fatal|failed|panic|segfault|segmentation fault|enosys)\b|function not implemented|exited abnormally|異常退出|錯誤|失敗', text, re.I):
         return 'error'
     if re.search(r'\b(?:warn|warning)\b|警告', text, re.I):
         return 'warning'
@@ -111,7 +122,7 @@ def history(offset=0, level='all'):
     entries = filtered[offset:offset + 20]
     for entry in entries:
         lines = [line.strip() for line in entry['text'].splitlines() if line.strip()]
-        relevant = [line for line in lines if any(word in line.lower() for word in ('error', 'exception', 'fatal', 'failed', '異常退出')) and not line.startswith(('File ', 'During '))]
+        relevant = [line for line in lines if any(word in line.lower() for word in ('error', 'exception', 'fatal', 'failed', 'exited abnormally', '異常退出')) and not line.startswith(('File ', 'During '))]
         entry['summary'] = (relevant[-1] if relevant else (lines[0] if lines else ''))[:180]
         entry['name'] = Path(entry['source']).name
         entry['report'] = single_report(entry)
@@ -123,11 +134,12 @@ def report():
     with closing(connect()) as db:
         collect(db)
         rows = db.execute('SELECT time,source,text FROM events ORDER BY id DESC LIMIT 100').fetchall()
-    text = '# omalauncher Linux 系統錯誤\n\n'
-    text += '時間為收集時間；來源檔內容可能早於此時間。以下為最近 100 筆本機錯誤。\n\n'
-    text += '終端紀錄只包含 stderr 與非零退出碼，無法判斷所有視窗關閉原因。\n\n'
+    text = t('# Omalauncher Linux 系統錯誤\n\n時間為收集時間；來源檔內容可能早於此時間。以下為最近 100 筆本機紀錄。\n\n'
+             '終端紀錄只包含 stderr 與非零退出碼，無法判斷所有視窗關閉原因。\n\n',
+             '# Omalauncher Linux system errors\n\nTimes are when each was collected; the source file may be older. The newest 100 local records follow.\n\n'
+             'Terminal records hold only stderr and a non-zero exit code, so they cannot explain every closed window.\n\n')
     for time, source, body in rows:
-        text += f'## {time}\n\n來源：{source}\n\n'
+        text += f"## {time}\n\n{t('來源：', 'Source: ')}{source}\n\n"
         text += ''.join('    ' + line + '\n' for line in body.splitlines()) + '\n'
     return text
 
@@ -135,8 +147,11 @@ def report():
 
 if __name__ == '__main__':
     import sys
+    # system_errors.py [offset] [level] [en|zh], or: system_errors.py report [en|zh]
     if len(sys.argv) > 1 and sys.argv[1] == 'report':
+        LANGUAGE = 'zh' if sys.argv[2:3] == ['zh'] else 'en'
         print(report())
     else:
+        LANGUAGE = 'zh' if sys.argv[3:4] == ['zh'] else 'en'
         print(json.dumps(history(sys.argv[1] if len(sys.argv) > 1 else 0,
                                  sys.argv[2] if len(sys.argv) > 2 else 'all'), ensure_ascii=False))

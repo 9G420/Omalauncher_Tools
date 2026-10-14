@@ -54,9 +54,11 @@ class MonthlyJournalTests(unittest.TestCase):
         self.assertEqual(desk.read_latest(), ('2026-10-01', '08:00 · 新格式'))
 
     def test_log_writes_monthly_file_with_full_timestamp(self):
-        with patch.object(desk, 'refresh_widget'), redirect_stdout(io.StringIO()):
+        output = io.StringIO()
+        with patch.object(desk, 'refresh_widget'), patch.object(desk, 'LANGUAGE', 'zh'), redirect_stdout(output):
             desk.log_entry('專案：功能完成；驗證通過。')
             desk.log_entry('另一個重要變更。')
+        self.assertTrue(output.getvalue().startswith('已儲存 → journal/'))
         now = dt.datetime.now().astimezone()
         files = list(desk.JOURNAL.glob('*.md'))
         self.assertEqual([p.name for p in files], [now.strftime('%Y-%m.md')])
@@ -64,6 +66,16 @@ class MonthlyJournalTests(unittest.TestCase):
         self.assertEqual(content.count('# 開發日誌'), 1)
         self.assertIn('- ' + now.date().isoformat() + ' ', content)
         self.assertEqual(self.history(now.date().isoformat())['total'], 2)
+
+    def test_messages_follow_the_language(self):
+        for language, saved, empty in (('en', 'Saved → ', 'Write something to log.'), ('zh', '已儲存 → ', '請輸入日誌內容。')):
+            output = io.StringIO()
+            with patch.object(desk, 'refresh_widget'), patch.object(desk, 'LANGUAGE', language), redirect_stdout(output):
+                desk.log_entry('Sample App: checks passed.')
+                with self.assertRaises(SystemExit) as raised:
+                    desk.log_entry('   ')
+            self.assertTrue(output.getvalue().startswith(saved))
+            self.assertEqual(str(raised.exception), empty)
 
     def test_invalid_dates_and_empty_days(self):
         self.assertEqual(self.history('2026-10-12')['entries'], [])

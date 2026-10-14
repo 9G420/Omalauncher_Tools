@@ -1,6 +1,0 @@
-#!/usr/bin/env python3
-'''Compatibility command for agent instructions written before the rename.'''
-from pathlib import Path
-import runpy
-
-runpy.run_path(str(Path.home() / '.local/bin/oma-devlogs'), run_name='__main__')

@@ -94,7 +94,7 @@ def prepare(name, tab='logs', settings=False):
     text = text.replace('state settingsOpen = false', 'state settingsOpen = ' + str(settings).lower())
     if tab == 'errors':
         text = text.replace('state expandedError = 0', 'state expandedError = 1')
-    text = text.replace('size: 3x3', 'size: 3x4').replace('page: 2', 'page: 3')
+    text = text.replace('page: 2', 'page: 3')
     text = inert_handlers(text)
     assert not re.search(r'^\s*source\s|\b(?:run|terminal|app)\(', text, re.M)
     path = WIDGETS / ('preview-en-dev-logs-' + name + '.owl')

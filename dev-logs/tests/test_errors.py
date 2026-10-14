@@ -16,6 +16,7 @@ class ErrorTests(unittest.TestCase):
         self.assertEqual(errors.classify('runtime: drawing takes 4 ms per frame', '/a/widgets/.errors/koi.txt'), 'info')
         self.assertEqual(errors.classify("5: expected ')', found x", '/a/widgets/.errors/desk.txt'), 'error')
         self.assertEqual(errors.classify('warn: context\nOSError: [Errno 38] Function not implemented'), 'error')
+        self.assertEqual(errors.classify('2026-10-14T08:00:00 · foot exited abnormally: exit=139'), 'error')
 
     def test_filter_pagination_counts_and_single_report(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(errors, 'sources', return_value=[]):
@@ -34,6 +35,9 @@ class ErrorTests(unittest.TestCase):
                 self.assertEqual(errors.history(0, 'info')['total'], 1)
                 one, two = result['entries']
                 self.assertIn(one['text'], one['report'])
+                self.assertIn('Source: /terminal.log', one['report'])
+                with patch.object(errors, 'LANGUAGE', 'zh'):
+                    self.assertIn('來源：/terminal.log', errors.history(20, 'error')['entries'][0]['report'])
                 self.assertNotIn(two['text'], one['report'])
                 self.assertEqual(errors.history(0, 'all')['total'], 24)
 
@@ -52,6 +56,12 @@ class ErrorTests(unittest.TestCase):
                 result = errors.history()
                 self.assertEqual(result['total'], 3)
                 self.assertEqual(result['entries'][0]['text'], 'error: second')
+                # A pass with nothing new leaves the database file as it is.
+                database = root / 'logs/system-errors.sqlite3'
+                before = (database.stat().st_mtime_ns, database.read_bytes())
+                errors.history()
+                errors.history()
+                self.assertEqual((database.stat().st_mtime_ns, database.read_bytes()), before)
                 snapshot.write_text('')
                 errors.history()
                 snapshot.write_text('error: widget\n')

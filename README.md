@@ -2,7 +2,7 @@
 
 ## DEV LOGS
 
-Development logs, Markdown project notes and filtered Linux diagnostics, with English and Traditional Chinese settings. The journal is stored monthly and browsed daily. Agent logging instructions are available under Settings.
+Development logs, Markdown project notes and filtered Linux diagnostics, with English and Traditional Chinese settings. Log entries are stored in one file per month and browsed by day. Agent logging instructions are available under Settings.
 
 See the [DEV LOGS README, installation guide and screenshots](dev-logs/README.md). Install it independently with `python dev-logs/install.py`; the root installer below continues to install Terminal Voice and Dictation.
 

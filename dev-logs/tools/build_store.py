@@ -5,11 +5,10 @@ from pathlib import Path
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
-VERSION = '1.8'
+VERSION = '1.9'
 STORE = ROOT.parent / 'store/widgets/weebowiz/dev-logs'
 PAYLOAD = {
     'bin/oma-devlogs': ('.local/bin/oma-devlogs', True),
-    'bin/oma-devdesk': ('.local/bin/oma-devdesk', True),
     'bin/oma-devlogs-terminal': ('.local/bin/oma-devlogs-terminal', True),
     'lib/system_errors.py': ('.local/share/oma-devlogs/system_errors.py', False),
 }

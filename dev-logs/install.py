@@ -20,7 +20,7 @@ def main():
     if not args.skip_deps:
         if not shutil.which('pacman'):
             parser.error('Requires Omalauncher Arch Linux; use --skip-deps only if dependencies are present.')
-        subprocess.run(['pacman', '-S', '--needed', '--noconfirm', 'python', 'bash', 'coreutils', 'gum', 'less', 'micro', 'foot'], check=True)
+        subprocess.run(['pacman', '-S', '--needed', '--noconfirm', 'python', 'bash', 'coreutils', 'less', 'micro'], check=True)
     files = build_store.payload()
     files['.config/omalauncher/widgets/65-dev-logs.owl'] = (build_store.render(), False)
     install_files(files, build_store.payload_id())
