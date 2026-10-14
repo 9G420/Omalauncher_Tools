@@ -18,7 +18,15 @@ These screenshots use example text. The English pair shows a Claude terminal con
 - **Codex chat mode:** follows the latest local Codex conversation, displays completed replies and can automatically read a summary aloud. Dictation is sent through Omalauncher's `codex queue` command.
 - **Terminal mode:** reads the visible text of a dedicated tmux pane and sends dictated text to it when you tap **Send to target**. Start Codex, Claude, or another terminal program in that pane. Terminal playback is manual so changing prompts and progress messages are not read aloud repeatedly.
 - Both home-screen widgets and the browser dictation page share an English/Chinese interface switch. The reply or dictated text stays in its original language.
-- The voice widget offers summary/full-screen playback, stop, refresh, source selection, and a detailed view. Online speech converts to playable WAV; offline speech uses espeak-ng.
+- The voice widget offers summary/full-screen playback, stop, refresh, source selection, and a detailed view. Online speech converts to playable WAV; offline Chinese and English use Matcha when its model is installed, with espeak-ng as the fallback.
+
+## Offline voice model and samples
+
+The offline Chinese-English neural voice is **Matcha `matcha-icefall-zh-en`**, run locally with sherpa-onnx and the Vocos vocoder. On ARM64, tap **Set up** or **Update** on the widget to install sherpa-onnx and download the model; the model weights are not stored in this repository. Offline text in other languages, or Chinese and English when Matcha is unavailable, falls back to espeak-ng. Online mode remains available through Microsoft Edge TTS.
+
+- Model details and browser samples: [Matcha icefall zh-en](https://k2-fsa.github.io/sherpa/onnx/tts/all/Chinese-English/matcha-icefall-zh-en.html).
+- Model download: [sherpa-onnx TTS model release](https://github.com/k2-fsa/sherpa-onnx/releases/tag/tts-models); the Vocos vocoder is downloaded from the [vocoder release](https://github.com/k2-fsa/sherpa-onnx/releases/tag/vocoder-models).
+- Listen to samples generated locally with this widget's Matcha configuration: [Chinese sample](docs/audio/matcha-chinese.wav) · [English sample](docs/audio/matcha-english.wav).
 
 ## Install
 
@@ -30,7 +38,7 @@ cd Omalauncher_Tools
 python install.py
 ```
 
-You can also download the repository ZIP, extract it, and run `python install.py` there. The installer adds two home-screen widgets and installs Python, curl, util-linux, espeak-ng, libpulse, mpg123, tmux, and an isolated Python environment for edge-tts. Use `python install.py --skip-deps` only when these dependencies and the TTS environment already exist.
+You can also download the repository ZIP, extract it, and run `python install.py` there. The installer adds two home-screen widgets and installs Python, curl, util-linux, espeak-ng, libpulse, mpg123, tmux, and an isolated Python environment for speech. On ARM64, finish setup by tapping **Update** on the widget to download Matcha and its Vocos vocoder. Use `python install.py --skip-deps` only when these dependencies and the TTS environment already exist.
 
 ## Use with Codex or Claude
 
@@ -62,7 +70,7 @@ Dictation uses browser speech recognition. Choose a speech language, tap Start, 
 
 Download or pull the latest version and rerun `python install.py`. It preserves personal settings and draft text and backs up replaced program files under `~/.local/share/oma-voice/install-backups/`. Restart Linux if an older voice service is still running. Importing only the `.owl` files does not install their background programs.
 
-The repository contains no conversation logs, drafts, tokens, audio files, models, or virtual environments. Your Codex logs remain under `~/.codex/sessions/`; voice settings and output under `~/.config/omalauncher/voice.json` and `~/.cache/oma-voice/`; dictation text under `~/.cache/oma-speak/` and browser local storage. Terminal mode reads only the dedicated `oma-voice` tmux session. Online TTS sends the text being spoken to Microsoft Edge TTS. Browser speech recognition may use the browser provider's online service. Select offline speech to use local espeak-ng. The dictation page listens only on `127.0.0.1:18763` and checks an origin and random token before saving text.
+The repository contains no conversation logs, drafts, tokens, model weights, or virtual environments; the WAV files above are public demo samples. Your Codex logs remain under `~/.codex/sessions/`; voice settings and output under `~/.config/omalauncher/voice.json` and `~/.cache/oma-voice/`; dictation text under `~/.cache/oma-speak/` and browser local storage. Terminal mode reads only the dedicated `oma-voice` tmux session. Online TTS sends the text being spoken to Microsoft Edge TTS. Browser speech recognition may use the browser provider's online service. Select offline speech for local Matcha in Chinese or English when installed, with espeak-ng as fallback. The dictation page listens only on `127.0.0.1:18763` and checks an origin and random token before saving text.
 
 Run `python -m unittest discover -s tests -v` to check the package. You can preview a widget after installation with `owl-check ~/.config/omalauncher/widgets/46-speak.owl`.
 
@@ -84,7 +92,15 @@ Run `python -m unittest discover -s tests -v` to check the package. You can prev
 - **Codex 會話模式：** 跟隨本機最近活動的 Codex 對話，顯示已完成回覆，可自動播報摘要。語音輸入經 Omalauncher 的 `codex queue` 送入對話。
 - **終端模式：** 讀取指定 tmux 窗格的可見文字；點「送到目前目標」後將聽寫文字送入該窗格。可以在裡面運行 Codex、Claude 或其他命令列程式。終端畫面採手動播報，避免進度訊息重複朗讀。
 - 兩個首頁工具及瀏覽器聽寫頁共用中英文介面切換；回覆和聽寫內容保留原語言。
-- 播報工具可播放摘要或全文、停止、同步、選擇來源及查看詳情。線上語音會轉成可播放的 WAV；離線語音使用 espeak-ng。
+- 播報工具可播放摘要或全文、停止、同步、選擇來源及查看詳情。線上語音會轉成可播放的 WAV；中文和英文離線播報在 Matcha 模型已安裝時使用 Matcha，否則使用 espeak-ng。
+
+## 離線語音模型與試聽
+
+離線中英雙語神經語音使用 **Matcha `matcha-icefall-zh-en`**，透過 sherpa-onnx 在本機運行，並搭配 Vocos 聲碼器。ARM64 裝置請在小工具點「安裝」或「更新」下載 sherpa-onnx 和模型；模型權重不放在此倉庫。其他語言的離線播報，以及 Matcha 尚未安裝時的中英文播報，會使用 espeak-ng。線上語音仍可選 Microsoft Edge TTS。
+
+- 模型介紹與網頁試聽：[Matcha icefall zh-en](https://k2-fsa.github.io/sherpa/onnx/tts/all/Chinese-English/matcha-icefall-zh-en.html)。
+- 模型下載：[sherpa-onnx TTS 模型發佈頁](https://github.com/k2-fsa/sherpa-onnx/releases/tag/tts-models)；Vocos 聲碼器位於[發佈頁](https://github.com/k2-fsa/sherpa-onnx/releases/tag/vocoder-models)。
+- 本機 Matcha 配置生成的語音樣片：[中文試聽](docs/audio/matcha-chinese.wav) · [English sample](docs/audio/matcha-english.wav)。
 
 ## 安裝
 
@@ -96,7 +112,7 @@ cd Omalauncher_Tools
 python install.py
 ```
 
-也可下載倉庫 ZIP 並解壓，在目錄內執行 `python install.py`。安裝程式會加入兩個首頁工具，並安裝 Python、curl、util-linux、espeak-ng、libpulse、mpg123、tmux 和 edge-tts 的獨立 Python 環境。只有依賴和語音環境都已具備時才使用 `python install.py --skip-deps`。
+也可下載倉庫 ZIP 並解壓，在目錄內執行 `python install.py`。安裝程式會加入兩個首頁工具，並安裝 Python、curl、util-linux、espeak-ng、libpulse、mpg123、tmux 和語音用的獨立 Python 環境。ARM64 裝置還需在小工具點「更新」下載 Matcha 和 Vocos 聲碼器。只有依賴和語音環境都已具備時才使用 `python install.py --skip-deps`。
 
 ## 使用 Codex 或 Claude
 
@@ -116,7 +132,7 @@ tmux new -A -s oma-voice
 
 下載最新版本並重新執行 `python install.py`。安裝會保留個人設定與草稿，並把舊程式備份到 `~/.local/share/oma-voice/install-backups/`。若舊播報服務仍在運行，重啟 Linux 載入新程式。只匯入 `.owl` 檔不會安裝背景程式。
 
-倉庫不包含對話紀錄、草稿、Token、音檔、模型或虛擬環境。Codex 記錄位於 `~/.codex/sessions/`；播報設定和快取位於 `~/.config/omalauncher/voice.json`、`~/.cache/oma-voice/`；聽寫文字位於 `~/.cache/oma-speak/` 和瀏覽器本機儲存。終端模式只讀取指定的 `oma-voice` tmux 工作階段。線上語音會把朗讀文字傳給 Microsoft Edge TTS；瀏覽器語音辨識也可能使用供應商的線上服務。選擇離線語音則使用本機 espeak-ng。聽寫頁只監聽 `127.0.0.1:18763`，保存時檢查來源與隨機 Token。
+倉庫不包含私人對話紀錄、草稿、Token、模型權重或虛擬環境；前述 WAV 是公開語音樣片。Codex 記錄位於 `~/.codex/sessions/`；播報設定和快取位於 `~/.config/omalauncher/voice.json`、`~/.cache/oma-voice/`；聽寫文字位於 `~/.cache/oma-speak/` 和瀏覽器本機儲存。終端模式只讀取指定的 `oma-voice` tmux 工作階段。線上語音會把朗讀文字傳給 Microsoft Edge TTS；瀏覽器語音辨識也可能使用供應商的線上服務。選擇離線語音時，中英文使用本機 Matcha（若已安裝），其他情況使用 espeak-ng。聽寫頁只監聽 `127.0.0.1:18763`，保存時檢查來源與隨機 Token。
 
 執行 `python -m unittest discover -s tests -v` 可檢查分享包；安裝後以 `owl-check ~/.config/omalauncher/widgets/46-speak.owl` 預覽首頁和詳情頁。
 
