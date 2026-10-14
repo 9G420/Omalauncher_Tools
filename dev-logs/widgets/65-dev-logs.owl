@@ -3,7 +3,7 @@ widget "DEV LOGS" {
   order: 2
   size: 3x4
   minSize: 2x2
-  meta { owl: 6; description: "Local development log, Markdown notes and Linux diagnostics, with a prompt that lets Codex or Claude write log entries."; version: "__VERSION__"; license: "MIT"; category: "productivity" }
+  meta { owl: 6; description: "Local development log, Markdown notes and Linux diagnostics, with a prompt that lets your coding agent write log entries."; version: "__VERSION__"; license: "MIT"; category: "productivity" }
   requires { pacman: ["python", "bash", "coreutils", "less", "micro"] }
   state language = "en" persist
   let zh = language == "zh"
