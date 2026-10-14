@@ -1,0 +1,47 @@
+[
+  {
+    "file": "dev-logs.png",
+    "bytes": 29323,
+    "pixels": [
+      516,
+      736
+    ],
+    "sha256": "30e651487c9e1fe319aed842096499b5c4fa53b485b5975aa34a3fd8948b2d3b"
+  },
+  {
+    "file": "logs.png",
+    "bytes": 121337,
+    "pixels": [
+      1080,
+      2400
+    ],
+    "sha256": "fbba89819e6be04a6b9012afea6cfc45e02fa9f342e256f444ddf9b1d4f69a31"
+  },
+  {
+    "file": "files.png",
+    "bytes": 81694,
+    "pixels": [
+      1080,
+      2400
+    ],
+    "sha256": "eee98ff7bf9470b539a1f2b8cb5e6de70b1523bc82b85103ffa1c4da62859d24"
+  },
+  {
+    "file": "errors.png",
+    "bytes": 99850,
+    "pixels": [
+      1080,
+      2400
+    ],
+    "sha256": "642fd4bc0e430c1073684049311ba107253788e3e7639dde3039138c9d901bf2"
+  },
+  {
+    "file": "settings.png",
+    "bytes": 183450,
+    "pixels": [
+      1080,
+      2400
+    ],
+    "sha256": "830097993adb499e3f5cd13d5e45f53027c25623b38586e3465d0fd72ab0e9cb"
+  }
+]

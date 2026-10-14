@@ -1,0 +1,28 @@
+#!/bin/bash
+# Keep terminal diagnostics for DEV LOGS; do not record terminal input/output.
+log_dir="$HOME/oma-devlogs/logs/terminals"
+umask 077
+if ! mkdir -p -- "$log_dir"; then
+    exec /usr/bin/foot "$@"
+fi
+log_file=$(mktemp "$log_dir/foot-$(date +%Y%m%d-%H%M%S)-XXXXXX.log") || exec /usr/bin/foot "$@"
+exec {diagnostic_fd}> >(tee -a -- "$log_file" >&2)
+tee_pid=$!
+/usr/bin/foot "$@" 2>&"$diagnostic_fd" &
+foot_pid=$!
+exec {diagnostic_fd}>&-
+trap 'kill -TERM "$foot_pid" 2>/dev/null' TERM
+trap 'kill -INT "$foot_pid" 2>/dev/null' INT
+trap 'kill -HUP "$foot_pid" 2>/dev/null' HUP
+wait "$foot_pid"
+result=$?
+if kill -0 "$foot_pid" 2>/dev/null; then
+    wait "$foot_pid"
+    result=$?
+fi
+wait "$tee_pid" 2>/dev/null
+if [ "$result" -ne 0 ]; then
+    printf '%s · foot 異常退出：exit=%s（128 以上通常表示信號；例如 137=SIGKILL、139=SIGSEGV）\n' "$(date -Is)" "$result" >> "$log_file"
+fi
+[ -s "$log_file" ] || rm -f -- "$log_file"
+exit "$result"

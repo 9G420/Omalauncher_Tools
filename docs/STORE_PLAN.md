@@ -85,3 +85,11 @@
 2. 提高 `tools/build_store.py` 的 `VERSION`。
 3. 執行 `python tools/build_store.py`，再跑 `python -m unittest discover -s tests -v`。
 4. 在商店倉庫內檢查：`java -jar tools/owl.jar review . widgets/weebowiz/<name>/widget.owl`。
+
+## DEV LOGS（dev-logs 分支）
+
+獨立套件在 `dev-logs/`，安裝入口 `python dev-logs/install.py`；不改動語音工具的安裝流程。
+商店投稿資料夾為 `store/widgets/weebowiz/dev-logs/`，版本 1.8，含內嵌安裝程式與英文預覽圖。
+獨立 README 與五張英文示例截圖在 `dev-logs/docs/screenshots/`；實際筆記、日誌、資料庫及 agent 指示不打包。
+已驗證獨立安裝、保留既有資料、舊名稱相容、月檔與每日瀏覽、Markdown 操作、錯誤等級篩選及單筆報告；商店檢查器通過。
+目前只推送至擁有者的工具倉庫分支，未送出 DEV LOGS 的商店 PR。

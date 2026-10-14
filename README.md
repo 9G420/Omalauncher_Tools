@@ -1,4 +1,14 @@
-# Terminal Voice & Dictation for Omalauncher
+# Omalauncher Tools
+
+## DEV LOGS
+
+Development logs, Markdown project notes and filtered Linux diagnostics, with English and Traditional Chinese settings. The journal is stored monthly and browsed daily. Agent logging instructions are available under Settings.
+
+See the [DEV LOGS README, installation guide and screenshots](dev-logs/README.md). Install it independently with `python dev-logs/install.py`; the root installer below continues to install Terminal Voice and Dictation.
+
+![DEV LOGS home widget](dev-logs/docs/screenshots/dev-logs.png)
+
+## Terminal Voice & Dictation for Omalauncher
 
 Read terminal output aloud and dictate text into Codex, Claude, or another command-line program on Android Omalauncher.
 

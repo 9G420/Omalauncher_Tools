@@ -1,0 +1,348 @@
+widget "DEV LOGS" {
+  page: 2
+  order: 2
+  size: 3x3
+  minSize: 2x2
+  meta { owl: 6; description: "Local development journal, Markdown workspace and Linux error reports with agent logging instructions."; version: "1.8"; license: "MIT"; category: "productivity" }
+  requires { pacman: ["python", "bash", "coreutils", "gum", "less", "micro", "foot"] }
+  state language = "en" persist
+  let zh = language == "zh"
+  source installed = file("~/.local/share/oma-devlogs/store-version")
+  source setupState = file("~/.local/share/oma-devlogs/setup-state")
+  let ready = installed == "1.8-d6a9461e8ab8"
+  let setupText = setupState == "failed" ? (zh ? "安裝失敗，請查看 ~/.cache/oma-devlogs/setup.log" : "Setup failed. See ~/.cache/oma-devlogs/setup.log") : setupState == "installing" && !ready ? (zh ? "安裝中…" : "Installing…") : (zh ? "安裝本機工作台程式，保留既有筆記與日誌。" : "Install the local workspace programs. Existing notes and journal are preserved.")
+  component Setup() {
+    Column {
+      gap: 8
+      Text { text: setupText; style: small; color: muted }
+      Button { text: installed == "" ? (zh ? "安裝" : "Set up") : (zh ? "更新" : "Update"); fill: width; onTap: run("""set -eu
+umask 077
+mkdir -p "$HOME/.cache/oma-devlogs"
+exec >>"$HOME/.cache/oma-devlogs/setup.log" 2>&1
+python - <<'OMA_DESK_SETUP'
+'''Install only DEV LOGS program files; never overwrite journal or note data.'''
+import datetime
+import os
+from pathlib import Path
+import shutil
+import sqlite3
+import uuid
+
+
+def install_files(files, version):
+    home = Path.home()
+    # Upgrade the local prototype without exporting or overwriting its data.
+    for old, new in (('oma-devdesk', 'oma-devlogs'),
+                     ('.local/share/oma-devdesk', '.local/share/oma-devlogs')):
+        previous, current = home / old, home / new
+        if previous.exists() and not current.exists():
+            previous.rename(current)
+        elif old == 'oma-devdesk' and previous.exists() and current.exists():
+            raise RuntimeError('Both legacy and new journal folders exist; preserve and consolidate them before installing.')
+    database = home / 'oma-devlogs/logs/system-errors.sqlite3'
+    if database.exists():
+        old_prefix, new_prefix = str(home / 'oma-devdesk') + '/', str(home / 'oma-devlogs') + '/'
+        db = sqlite3.connect(database)
+        try:
+            with db:
+                for table, column in (('cursors', 'path'), ('events', 'source')):
+                    if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone():
+                        continue
+                    if table == 'cursors':
+                        rows = db.execute('SELECT path FROM cursors WHERE substr(path,1,?)=?', (len(old_prefix), old_prefix)).fetchall()
+                        for (path,) in rows:
+                            target = new_prefix + path[len(old_prefix):]
+                            if db.execute('SELECT 1 FROM cursors WHERE path=?', (target,)).fetchone():
+                                db.execute('DELETE FROM cursors WHERE path=?', (path,))
+                            else:
+                                db.execute('UPDATE cursors SET path=? WHERE path=?', (target, path))
+                    else:
+                        db.execute('UPDATE events SET source=? || substr(source,?) WHERE substr(source,1,?)=?',
+                                   (new_prefix, len(old_prefix) + 1, len(old_prefix), old_prefix))
+        finally:
+            db.close()
+    share = home / '.local/share/oma-devlogs'
+    share.mkdir(parents=True, exist_ok=True, mode=0o700)
+    state = share / 'setup-state'
+    state.write_text('installing')
+    backup = share / 'install-backups' / datetime.datetime.now().strftime('%Y%m%d-%H%M%S-%f')
+    try:
+        for name in ('notes', 'journal', 'logs/terminals'):
+            (home / 'oma-devlogs' / name).mkdir(parents=True, exist_ok=True, mode=0o700)
+        payload = dict(files)
+        payload['.local/share/oma-devlogs/store-version'] = (version, False)
+        for relative, (text, executable) in payload.items():
+            target = home / relative
+            target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            if target.exists():
+                saved = backup / relative
+                saved.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+                shutil.copy2(target, saved)
+            temporary = target.with_name(target.name + '.' + uuid.uuid4().hex + '.install-tmp')
+            try:
+                temporary.write_text(text, encoding='utf-8')
+                temporary.chmod(0o700 if executable else 0o600)
+                temporary.replace(target)
+            finally:
+                temporary.unlink(missing_ok=True)
+        previous_widget = home / '.config/omalauncher/widgets/65-dev-desk.owl'
+        if previous_widget.exists() and previous_widget.read_text().lstrip().startswith(('widget "DEV DESK"', 'widget "DEV // DESK"')):
+            saved = backup / '.config/omalauncher/widgets/65-dev-desk.owl'
+            saved.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            shutil.copy2(previous_widget, saved)
+            previous_widget.unlink()
+        state.write_text('done')
+    except Exception:
+        state.write_text('failed')
+        raise
+    print('DEV LOGS installed. Your notes, journal and agent settings were preserved.')
+    if backup.exists():
+        print('Replaced program files backed up at:', backup)
+
+install_files({'.local/bin/oma-devlogs': ('#!/usr/bin/env python3\n\'\'\'Local Markdown notebook and development log for OMA Linux.\'\'\'\nfrom __future__ import annotations\n\nimport datetime as dt\nimport fcntl\nimport json\nimport os\nimport re\nimport shutil\nimport subprocess\nimport sys\nimport uuid\nfrom pathlib import Path\n\nROOT = Path.home() / "oma-devlogs"\nNOTES = ROOT / "notes"\nJOURNAL = ROOT / "journal"\n\n\ndef ensure_dirs() -> None:\n    for path in (ROOT, NOTES, JOURNAL):\n        path.mkdir(parents=True, exist_ok=True)\n        try:\n            path.chmod(0o700)\n        except OSError:\n            pass\n\n\ndef journal_entries() -> list[tuple[str, str]]:\n    \'\'\'Daily views over monthly storage; still accept legacy daily files.\'\'\'\n    entries = []\n    for path in sorted(JOURNAL.glob("*.md")):\n        if not re.fullmatch(r"\\d{4}-\\d{2}(?:-\\d{2})?", path.stem):\n            continue\n        for line in path.read_text(encoding="utf-8").splitlines():\n            if not line.startswith("- "):\n                continue\n            text = line[2:]\n            dated = re.fullmatch(r"(\\d{4}-\\d{2}-\\d{2}) (\\d{2}:\\d{2} · .+)", text)\n            if dated and dated[1].startswith(path.stem[:7] + "-"):\n                day, text = dated[1], dated[2]\n            elif len(path.stem) == 10:\n                day = path.stem\n            else:\n                continue\n            try:\n                dt.date.fromisoformat(day)\n            except ValueError:\n                continue\n            entries.append((day, text))\n    return sorted(entries, key=lambda entry: (entry[0], entry[1][:5]))\n\n\ndef read_latest() -> tuple[str, str]:\n    entries = journal_entries()\n    return entries[-1] if entries else (dt.datetime.now().astimezone().date().isoformat(), "")\n\n\ndef status() -> None:\n    ensure_dirs()\n    entries = journal_entries()\n    day, latest = entries[-1] if entries else (dt.datetime.now().astimezone().date().isoformat(), "")\n    logs = [text for _, text in entries]\n    print(json.dumps({\n        "notes": len(list(NOTES.glob("*.md"))),\n        "entries": len(logs),\n        "recent": list(reversed(logs[-3:])),\n        "day": day,\n        "latest": latest,\n        "root": str(ROOT),\n        "home": str(Path.home()),\n        "projects": str(Path.home() / \'projects\' if (Path.home() / \'projects\').is_dir() else Path.home()),\n        "updated": dt.datetime.now().astimezone().strftime("%H:%M:%S"),\n    }, ensure_ascii=False))\n\n\ndef browse(raw: str, offset: int = 0) -> None:\n    try:\n        path = Path(raw).expanduser().resolve()\n        path.relative_to(Path.home().resolve())\n        if not path.is_dir():\n            raise ValueError("不是目錄")\n        items = sorted(path.iterdir(), key=lambda p: (not p.is_dir(), p.name.casefold()))\n        items = [p for p in items if not p.name.startswith(".")]\n        offset = max(0, offset)\n        rows = []\n        for item in items[offset:offset + 40]:\n            try:\n                rows.append({"name": item.name, "path": str(item), "dir": item.is_dir(),\n                             "size": item.stat().st_size, "link": item.is_symlink()})\n            except OSError:\n                rows.append({"name": item.name, "path": str(item), "dir": False, "size": 0})\n        print(json.dumps({"path": str(path), "parent": str(path.parent) if path != Path.home() else str(path),\n                          "items": rows, "offset": offset, "total": len(items),\n                          "more": offset + 40 < len(items)}, ensure_ascii=False))\n    except (OSError, ValueError) as error:\n        print(json.dumps({"path": raw, "items": [], "error": str(error)}, ensure_ascii=False))\n\n\ndef history(day: str = "", offset: int = 0) -> None:\n    all_entries = journal_entries()\n    days = sorted({day for day, _ in all_entries}, reverse=True)\n    selected = day or (days[0] if days else "")\n    if selected and not re.fullmatch(r"\\d{4}-\\d{2}-\\d{2}", selected):\n        raise SystemExit("日期格式必須為 YYYY-MM-DD")\n    if selected:\n        try:\n            dt.date.fromisoformat(selected)\n        except ValueError:\n            raise SystemExit("日期格式必須為有效的 YYYY-MM-DD")\n    entries = [text for day, text in reversed(all_entries) if day == selected]\n    offset = max(0, offset)\n    print(json.dumps({"days": days[:500], "day": selected, "entries": entries[offset:offset + 40],\n                      "offset": offset, "total": len(entries), "more": offset + 40 < len(entries)}, ensure_ascii=False))\n\n\ndef refresh_widget() -> None:\n    \'\'\'Notify the launcher after a successful write; logging also works offline.\'\'\'\n    sender = shutil.which("owl-send")\n    if not sender:\n        return\n    # Store-installed filenames differ from the GitHub install\'s filename.\n    widgets = Path.home() / \'.config/omalauncher/widgets\'\n    for path in widgets.glob(\'*.owl\'):\n        if path.name.startswith(\'preview-\'):\n            continue\n        try:\n            if not re.match(r\'\\s*widget "DEV LOGS"\', path.read_text()):\n                continue\n        except OSError:\n            continue\n        for args in (["set", "day", ""], ["set", "logOffset", "0"], ["refresh"]):\n            try:\n                subprocess.run([sender, str(path), *args], stdout=subprocess.DEVNULL,\n                               stderr=subprocess.DEVNULL, timeout=2, check=False)\n            except (OSError, subprocess.TimeoutExpired):\n                break\n\n\ndef log_entry(text: str) -> None:\n    ensure_dirs()\n    clean = " ".join(text.replace("\\x00", "").split()).strip()\n    if not clean:\n        raise SystemExit("請輸入日誌內容。")\n    now = dt.datetime.now().astimezone()\n    month = now.strftime(\'%Y-%m\')\n    path = JOURNAL / f"{month}.md"\n    with (ROOT / \'.journal.lock\').open(\'a\') as lock:\n        fcntl.flock(lock, fcntl.LOCK_EX)\n        with path.open("a", encoding="utf-8") as stream:\n            if stream.tell() == 0:\n                stream.write(f"# 開發日誌 · {month}\\n\\n")\n            stream.write(f"- {now.strftime(\'%Y-%m-%d %H:%M\')} · {clean}\\n")\n    try:\n        path.chmod(0o600)\n    except OSError:\n        pass\n    print(f"已記錄 → {path.relative_to(ROOT)}", flush=True)\n    refresh_widget()\n\n\ndef slugify(title: str) -> str:\n    slug = title.strip().lower()\n    slug = re.sub(r"[^\\w\\u3400-\\u9fff-]+", "-", slug, flags=re.UNICODE)\n    slug = re.sub(r"-+", "-", slug).strip("-_")\n    return slug[:60] or "untitled"\n\n\ndef create_note(title: str, body: str = "") -> Path:\n    ensure_dirs()\n    clean_title = " ".join(title.split()).strip()\n    if not clean_title:\n        raise SystemExit("標題不能為空。")\n    stem = slugify(clean_title)\n    path = NOTES / f"{stem}.md"\n    serial = 2\n    while path.exists():\n        path = NOTES / f"{stem}-{serial}.md"\n        serial += 1\n    content = f"# {clean_title}\\n\\n"\n    if body.strip():\n        content += body.strip() + "\\n"\n    else:\n        content += "## 想法\\n\\n\\n## 下一步\\n\\n- [ ] \\n"\n    path.write_text(content, encoding="utf-8")\n    try:\n        path.chmod(0o600)\n    except OSError:\n        pass\n    return path\n\n\ndef home_directory(raw: str) -> Path:\n    path = Path(raw).expanduser().resolve(strict=True)\n    path.relative_to(Path.home().resolve())\n    if not path.is_dir():\n        raise ValueError("不是目錄")\n    return path\n\n\ndef create_markdown(raw: str, title: str) -> Path:\n    folder = home_directory(raw)\n    title = title.strip()\n    if title.lower().endswith(\'.md\'):\n        title = title[:-3].strip()\n    if not title or title.startswith(\'.\') or any(c in title for c in (\'/\', \'\\\\\', \'\\x00\', \'\\n\', \'\\r\')):\n        raise ValueError("請輸入檔名，不含路徑或換行。")\n    stem = title[:120]\n    for serial in range(1, 10000):\n        path = folder / (stem + (f\'-{serial}\' if serial > 1 else \'\') + \'.md\')\n        try:\n            with path.open(\'x\', encoding=\'utf-8\') as stream:\n                path.chmod(0o600)\n                stream.write(f\'# {title}\\n\\n\')\n            return path\n        except FileExistsError:\n            continue\n    raise ValueError("同名檔案過多，請換一個檔名。")\n\n\ndef trash_markdown(raw: str) -> Path:\n    supplied = Path(raw).expanduser()\n    if supplied.is_symlink():\n        raise ValueError("不刪除符號連結，請開啟實際目錄後操作。")\n    path = supplied.resolve(strict=True)\n    path.relative_to(Path.home().resolve())\n    if not path.is_file() or path.suffix.lower() != \'.md\':\n        raise ValueError("只能刪除 Markdown 檔案。")\n    trash = Path.home() / \'.local/share/oma-devlogs/trash\'\n    trash.mkdir(parents=True, exist_ok=True, mode=0o700)\n    token = uuid.uuid4().hex\n    target = trash / f\'{token}.md\'\n    metadata = trash / f\'{token}.json\'\n    metadata.write_text(json.dumps({\'original\': str(path), \'deleted\': dt.datetime.now().astimezone().isoformat()}, ensure_ascii=False), encoding=\'utf-8\')\n    metadata.chmod(0o600)\n    try:\n        shutil.move(str(path), str(target))\n    except BaseException:\n        metadata.unlink()\n        raise\n    return target\n\n\ndef need_gum() -> None:\n    if shutil.which("gum") is None:\n        raise SystemExit("互動工作台需要 gum；可先用 `oma-devlogs log \'內容\'` 記錄日誌。")\n\n\ndef gum_input(prompt: str, placeholder: str = "") -> str:\n    result = subprocess.run(\n        ["gum", "input", "--prompt", prompt, "--placeholder", placeholder],\n        text=True,\n        check=False,\n        capture_output=True,\n    )\n    return result.stdout.strip() if result.returncode == 0 else ""\n\n\ndef pager(path: Path) -> None:\n    with path.open(encoding="utf-8") as stream:\n        subprocess.run(["gum", "pager"], stdin=stream, check=False)\n\n\ndef interactive() -> None:\n    ensure_dirs()\n    need_gum()\n    while True:\n        print("\\033[2J\\033[H", end="")\n        print("\\033[38;5;45mDEV LOGS\\033[0m   本機 Markdown · 開發日誌")\n        print(f"{ROOT}\\n")\n        options = ["快速記日誌", "新增 Markdown", "編輯 Markdown", "瀏覽筆記", "查看本月日誌", "歷史日誌", "退出"]\n        choice = subprocess.run(["gum", "choose", *options], text=True, check=False, capture_output=True)\n        if choice.returncode != 0 or choice.stdout.strip() == "退出":\n            return\n        selected = choice.stdout.strip()\n        if selected == "快速記日誌":\n            text = gum_input("日誌 › ", "完成了什麼？")\n            if text:\n                log_entry(text)\n                input("\\nEnter 返回…")\n        elif selected == "新增 Markdown":\n            title = gum_input("標題 › ", "例如：測試計畫")\n            if title:\n                body_result = subprocess.run(\n                    ["gum", "write", "--placeholder", "在這裡寫 Markdown…", "--header", title],\n                    text=True,\n                    check=False,\n                    capture_output=True,\n                )\n                if body_result.returncode == 0:\n                    path = create_note(title, body_result.stdout)\n                    print(f"\\n已建立 → {path.relative_to(ROOT)}")\n                    input("\\nEnter 返回…")\n        elif selected in {"編輯 Markdown", "瀏覽筆記"}:\n            files = sorted(NOTES.glob("*.md"))\n            if not files:\n                print("\\n目前沒有筆記。")\n                input("\\nEnter 返回…")\n                continue\n            listing = "\\n".join(str(p) for p in files)\n            chosen = subprocess.run(\n                ["gum", "filter", "--placeholder", "搜尋筆記…"],\n                input=listing,\n                text=True,\n                check=False,\n                capture_output=True,\n            )\n            path = Path(chosen.stdout.strip()) if chosen.returncode == 0 and chosen.stdout.strip() else None\n            if path and path.exists():\n                if selected == "瀏覽筆記":\n                    pager(path)\n                else:\n                    edited = subprocess.run(\n                        ["gum", "write", "--header", path.name, "--value", path.read_text(encoding="utf-8")],\n                        text=True,\n                        check=False,\n                        capture_output=True,\n                    )\n                    if edited.returncode == 0:\n                        temp = path.with_suffix(path.suffix + ".new")\n                        temp.write_text(edited.stdout, encoding="utf-8")\n                        os.replace(temp, path)\n                        try:\n                            path.chmod(0o600)\n                        except OSError:\n                            pass\n        elif selected == "歷史日誌":\n            files = sorted(JOURNAL.glob("*.md"), reverse=True)\n            if files:\n                chosen = subprocess.run(["gum", "choose", *[p.name for p in files]], text=True, capture_output=True)\n                if chosen.returncode == 0 and chosen.stdout.strip() in {p.name for p in files}:\n                    pager(JOURNAL / chosen.stdout.strip())\n            else:\n                input("沒有歷史日誌。Enter 返回…")\n        elif selected == "查看本月日誌":\n            path = JOURNAL / f"{dt.datetime.now().astimezone().strftime(\'%Y-%m\')}.md"\n            if path.exists():\n                pager(path)\n            else:\n                print("\\n本月還沒有日誌。")\n                input("\\nEnter 返回…")\n\n\ndef main(argv: list[str]) -> None:\n    ensure_dirs()\n    if not argv or argv[0] in {"open", "ui"}:\n        interactive()\n    elif argv[0] == "browse":\n        browse(argv[1] if len(argv) > 1 else str(Path.home()), int(argv[2]) if len(argv) > 2 else 0)\n    elif argv[0] == "history":\n        history(argv[1] if len(argv) > 1 else "", int(argv[2]) if len(argv) > 2 else 0)\n    elif argv[0] == "status":\n        status()\n    elif argv[0] == "new-at" and len(argv) == 3:\n        try:\n            print(f"已建立 → {create_markdown(argv[1], argv[2])}", flush=True)\n        except (OSError, ValueError) as error:\n            raise SystemExit(str(error))\n    elif argv[0] == "delete-md" and len(argv) == 2:\n        try:\n            path = trash_markdown(argv[1])\n            print(f"已移至回收區 → {path}", flush=True)\n        except (OSError, ValueError) as error:\n            raise SystemExit(str(error))\n    elif argv[0] in {"log", "add"}:\n        log_entry(" ".join(argv[1:]))\n    elif argv[0] in {"new", "note"}:\n        if len(argv) < 2:\n            raise SystemExit("用法：oma-devlogs new <標題>")\n        path = create_note(" ".join(argv[1:]))\n        print(path)\n    elif argv[0] == "list":\n        for path in sorted(NOTES.glob("*.md")):\n            print(path.relative_to(ROOT))\n    elif argv[0] == "help":\n        print("oma-devlogs [open|status|browse <目錄> [偏移]|history [日期] [偏移]|log <文字>|new <標題>|new-at <目錄> <檔名>|delete-md <檔案>|list]")\n    else:\n        raise SystemExit(f"未知指令：{argv[0]}（用 `oma-devlogs help` 查看）")\n\n\nif __name__ == "__main__":\n    main(sys.argv[1:])\n', True), '.local/bin/oma-devdesk': ("#!/usr/bin/env python3\n'''Compatibility command for agent instructions written before the rename.'''\nfrom pathlib import Path\nimport runpy\n\nrunpy.run_path(str(Path.home() / '.local/bin/oma-devlogs'), run_name='__main__')\n", True), '.local/bin/oma-devlogs-terminal': ('#!/bin/bash\n# Keep terminal diagnostics for DEV LOGS; do not record terminal input/output.\nlog_dir="$HOME/oma-devlogs/logs/terminals"\numask 077\nif ! mkdir -p -- "$log_dir"; then\n    exec /usr/bin/foot "$@"\nfi\nlog_file=$(mktemp "$log_dir/foot-$(date +%Y%m%d-%H%M%S)-XXXXXX.log") || exec /usr/bin/foot "$@"\nexec {diagnostic_fd}> >(tee -a -- "$log_file" >&2)\ntee_pid=$!\n/usr/bin/foot "$@" 2>&"$diagnostic_fd" &\nfoot_pid=$!\nexec {diagnostic_fd}>&-\ntrap \'kill -TERM "$foot_pid" 2>/dev/null\' TERM\ntrap \'kill -INT "$foot_pid" 2>/dev/null\' INT\ntrap \'kill -HUP "$foot_pid" 2>/dev/null\' HUP\nwait "$foot_pid"\nresult=$?\nif kill -0 "$foot_pid" 2>/dev/null; then\n    wait "$foot_pid"\n    result=$?\nfi\nwait "$tee_pid" 2>/dev/null\nif [ "$result" -ne 0 ]; then\n    printf \'%s · foot 異常退出：exit=%s（128 以上通常表示信號；例如 137=SIGKILL、139=SIGSEGV）\\n\' "$(date -Is)" "$result" >> "$log_file"\nfi\n[ -s "$log_file" ] || rm -f -- "$log_file"\nexit "$result"\n', True), '.local/share/oma-devlogs/system_errors.py': ('\'\'\'Local Linux error history. Does not access Android logs or terminal contents.\'\'\'\nfrom __future__ import annotations\n\nimport datetime as dt\nimport hashlib\nimport json\nimport os\nimport re\nfrom pathlib import Path\nimport sqlite3\nfrom contextlib import closing\n\nROOT = Path.home() / \'oma-devlogs\'\nCONFIG = Path.home() / \'.config/omalauncher\'\nTERMINALS = ROOT / \'logs/terminals\'\n\n\ndef sources():\n    for path in sorted((CONFIG / \'widgets/.errors\').glob(\'*.txt\')):\n        yield path, True\n    yield CONFIG / \'style/errors.txt\', True\n    for path in sorted(Path(\'/tmp\').glob(\'.guest-shell-err-*\')):\n        yield path, False\n    for path in sorted(TERMINALS.glob(\'*.log\')):\n        yield path, False\n    for name in (\'oma-voice/daemon.log\', \'oma-speak/server.log\', \'pixel-console/bridge.log\'):\n        yield Path.home() / \'.cache\' / name, False\n\n\ndef connect():\n    directory = ROOT / \'logs\'\n    directory.mkdir(parents=True, exist_ok=True, mode=0o700)\n    dbpath = directory / \'system-errors.sqlite3\'\n    db = sqlite3.connect(dbpath, timeout=5)\n    db.execute(\'CREATE TABLE IF NOT EXISTS cursors (path TEXT PRIMARY KEY, inode INTEGER, offset INTEGER, signature TEXT)\')\n    db.execute(\'CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY, time TEXT, source TEXT, text TEXT)\')\n    dbpath.chmod(0o600)\n    return db\n\n\ndef collect(db):\n    # One transaction protects offsets against simultaneous refreshes.\n    db.execute(\'BEGIN IMMEDIATE\')\n    try:\n        for path, snapshot in sources():\n            key = str(path)\n            old = db.execute(\'SELECT inode, offset, signature FROM cursors WHERE path=?\', (key,)).fetchone()\n            try:\n                with path.open(\'rb\') as stream:\n                    stat = os.fstat(stream.fileno())\n                    start = 0 if snapshot or not old or old[0] != stat.st_ino or stat.st_size < old[1] else old[1]\n                    # Keep newest context, bounded even when a source is noisy.\n                    stream.seek(max(start, stat.st_size - 32768))\n                    raw = stream.read(32768)\n                    end = stream.tell()\n            except (OSError, ValueError):\n                continue\n            signature = hashlib.sha256(raw).hexdigest() if snapshot else \'\'\n            text = raw.decode(\'utf-8\', errors=\'replace\').strip()\n            if text and (not snapshot or not old or old[2] != signature):\n                # Service files may include routine messages: only retain error contexts.\n                service = \'/.cache/\' in key\n                if not service or any(word in text.lower() for word in (\'error\', \'exception\', \'traceback\', \'fatal\', \'failed\', \'panic\', \'segfault\')):\n                    now = dt.datetime.now().astimezone().isoformat(timespec=\'seconds\')\n                    db.execute(\'INSERT INTO events(time,source,text) VALUES(?,?,?)\', (now, key, text))\n            db.execute(\'INSERT OR REPLACE INTO cursors VALUES(?,?,?,?)\', (key, stat.st_ino, end, signature))\n        # Missing snapshot files represent cleared errors; allow future recurrences.\n        for (key,) in db.execute(\'SELECT path FROM cursors\').fetchall():\n            if key.startswith(str(CONFIG)) and not Path(key).exists():\n                db.execute(\'DELETE FROM cursors WHERE path=?\', (key,))\n        db.execute(\'DELETE FROM events WHERE id NOT IN (SELECT id FROM events ORDER BY id DESC LIMIT 500)\')\n        db.commit()\n    except BaseException:\n        db.rollback()\n        raise\n\n\ndef single_report(entry):\n    return (\'# omalauncher Linux 系統錯誤\\n\\n\'\n            \'時間為收集時間；來源檔內容可能早於此時間。\\n\\n\'\n            f"## {entry[\'time\']}\\n\\n來源：{entry[\'source\']}\\n\\n" +\n            \'\'.join(\'    \' + line + \'\\n\' for line in entry[\'text\'].splitlines()))\n\n\ndef classify(text, source=\'\'):\n    \'\'\'Classify known diagnostics; unknown messages stay informational.\'\'\'\n    if re.search(r\'\\b(?:error|exception|traceback|fatal|failed|panic|segfault|segmentation fault|enosys)\\b|function not implemented|異常退出|錯誤|失敗\', text, re.I):\n        return \'error\'\n    if re.search(r\'\\b(?:warn|warning)\\b|警告\', text, re.I):\n        return \'warning\'\n    if text.strip().startswith(\'runtime: drawing takes\'):\n        return \'info\'\n    if \'/widgets/.errors/\' in source or source.endswith(\'/style/errors.txt\'):\n        return \'error\'\n    return \'info\'\n\n\ndef history(offset=0, level=\'all\'):\n    offset = max(0, int(offset))\n    if level not in (\'all\', \'error\', \'warning\', \'info\'):\n        raise ValueError(\'Unknown error filter\')\n    with closing(connect()) as db:\n        collect(db)\n        rows = [dict(zip((\'id\', \'time\', \'source\', \'text\'), row)) for row in db.execute(\n            \'SELECT id,time,source,text FROM events ORDER BY id DESC\')]\n    for row in rows:\n        row[\'level\'] = classify(row[\'text\'], row[\'source\'])\n    counts = {kind: sum(row[\'level\'] == kind for row in rows) for kind in (\'error\', \'warning\', \'info\')}\n    filtered = [row for row in rows if level == \'all\' or row[\'level\'] == level]\n    total = len(filtered)\n    entries = filtered[offset:offset + 20]\n    for entry in entries:\n        lines = [line.strip() for line in entry[\'text\'].splitlines() if line.strip()]\n        relevant = [line for line in lines if any(word in line.lower() for word in (\'error\', \'exception\', \'fatal\', \'failed\', \'異常退出\')) and not line.startswith((\'File \', \'During \'))]\n        entry[\'summary\'] = (relevant[-1] if relevant else (lines[0] if lines else \'\'))[:180]\n        entry[\'name\'] = Path(entry[\'source\']).name\n        entry[\'report\'] = single_report(entry)\n    return {\'total\': total, \'all_total\': len(rows), \'error_total\': counts[\'error\'],\n            \'counts\': counts, \'level\': level, \'entries\': entries, \'offset\': offset, \'more\': offset + 20 < total}\n\n\ndef report():\n    with closing(connect()) as db:\n        collect(db)\n        rows = db.execute(\'SELECT time,source,text FROM events ORDER BY id DESC LIMIT 100\').fetchall()\n    text = \'# omalauncher Linux 系統錯誤\\n\\n\'\n    text += \'時間為收集時間；來源檔內容可能早於此時間。以下為最近 100 筆本機錯誤。\\n\\n\'\n    text += \'終端紀錄只包含 stderr 與非零退出碼，無法判斷所有視窗關閉原因。\\n\\n\'\n    for time, source, body in rows:\n        text += f\'## {time}\\n\\n來源：{source}\\n\\n\'\n        text += \'\'.join(\'    \' + line + \'\\n\' for line in body.splitlines()) + \'\\n\'\n    return text\n\n\n\nif __name__ == \'__main__\':\n    import sys\n    if len(sys.argv) > 1 and sys.argv[1] == \'report\':\n        print(report())\n    else:\n        print(json.dumps(history(sys.argv[1] if len(sys.argv) > 1 else 0,\n                                 sys.argv[2] if len(sys.argv) > 2 else \'all\'), ensure_ascii=False))\n', False)}, '1.8-d6a9461e8ab8')
+OMA_DESK_SETUP""") }
+    }
+  }
+  state datesOpen = false
+  state pathsOpen = false
+  state tab = "logs"
+  state folder = "~"
+  state offset = 0
+  state day = ""
+  state logOffset = 0
+  state result = ""
+  state settingsOpen = false
+  state agentPromptCopied = false
+  let agentPrompt = zh ? """
+請使用 DEV LOGS 記錄本專案的重要開發進展，並把以下規則保存到適用的專案指示檔（Codex：AGENTS.md；Claude：CLAUDE.md），保留既有內容。
+
+1. 只記錄重要功能、實際完成的變更／修復、重要驗證結果，以及需要追蹤的問題；同一項工作合併一筆，不要每次回覆都記錄。
+2. 每筆以繁體中文簡潔寫 1–3 句，包含專案名稱、變更重點、實際驗證結果；有未解問題才補充。未驗證要明說，不把計畫或推測寫成已完成。
+3. 略過一般問答、研究建議、瑣碎修改、例行檢查、重複內容與日誌維護；不記錄密鑰或個資。
+4. 執行 ~/.local/bin/oma-devlogs log '摘要' 寫入，正確引用參數；命令成功後才算已記錄。先確認指令可用，無法寫入時告知我。設定規則本身不需要新增日誌，也不要建立示範紀錄。
+""" : """
+Use DEV LOGS to log important development progress for this project. Save these rules in the applicable project instructions (AGENTS.md for Codex; CLAUDE.md for Claude), preserving existing content.
+
+1. Log important features, implemented changes or fixes, meaningful verification results, and issues that need follow-up. Combine related work into one entry; do not log every reply.
+2. Keep each entry to 1–3 concise sentences: project name, key changes, actual verification results, and unresolved issues only when relevant. Say when something is unverified; never present plans or assumptions as completed work.
+3. Skip general Q&A, research, suggestions, trivial edits, routine checks, duplicates, and journal maintenance. Exclude secrets and personal data.
+4. Write using ~/.local/bin/oma-devlogs log 'summary', with correct shell quoting. Only claim it was recorded after the command succeeds. Check that the command is available and tell me if writing fails. Do not log this setup or create sample entries.
+"""
+  state errorOffset = 0
+  state errorLevel = "error" persist
+  state copiedError = 0
+  state expandedError = 0
+  state createOpen = false
+  state mdTitle = ""
+  state fileResult = ""
+  state deletePath = ""
+  on folder { deletePath = ""; createOpen = false; fileResult = "" }
+  on expandedError { copiedError = 0 }
+  on errorOffset { expandedError = 0; copiedError = 0 }
+  on errorLevel { errorOffset = 0; expandedError = 0; copiedError = 0 }
+  on settingsOpen { agentPromptCopied = false }
+  on language { agentPromptCopied = false }
+  source systemErrors = cmd("if [ -f ~/.local/share/oma-devlogs/system_errors.py ]; then python ~/.local/share/oma-devlogs/system_errors.py ${int(errorOffset)} ${sh(errorLevel)}; else printf '{}'; fi") every 15s json status
+  let errors = systemErrors.out
+  source snapshot = cmd("if [ -f ~/.local/bin/oma-devlogs ]; then python ~/.local/bin/oma-devlogs status; else printf '{}'; fi") every 30s json status
+  source directory = cmd("if [ -f ~/.local/bin/oma-devlogs ]; then python ~/.local/bin/oma-devlogs browse ${sh(folder)} ${int(offset)}; else printf '{}'; fi") every 30s json status
+  source archive = cmd("if [ -f ~/.local/bin/oma-devlogs ]; then python ~/.local/bin/oma-devlogs history ${sh(day)} ${int(logOffset)}; else printf '{}'; fi") every 30s json status
+  let desk = snapshot.out
+  let listing = directory.out
+  let logs = archive.out
+  onTap: { settingsOpen = false; refresh(); screen() }
+  Column {
+    gap: 8
+    Row {
+      Text { text: "DEV LOGS"; style: title; color: accent; weight: 1 }
+      Text { text: desk.updated ?? "…"; style: small; color: muted; width: 64; align: end }
+    }
+    if !ready { Setup {} } else {
+    Text { text: zh ? "${desk.notes ?? 0} 篇筆記 · ${desk.entries ?? 0} 條日誌" : "${desk.notes ?? 0} notes · ${desk.entries ?? 0} logs"; style: small; color: muted }
+    Text { text: snapshot.ok == false ? (zh ? "更新失敗，點擊查看" : "Update failed · tap to view") : (desk.latest != "" && desk.latest != null ? desk.latest : (zh ? "在設定中開啟 Agent 記錄教學" : "Open Settings for agent logging instructions")); style: small; maxLines: rows < 3 ? 1 : 3; weight: 1 }
+    Text { text: zh ? "系統錯誤 · ${errors.error_total ?? 0}" : "System errors · ${errors.error_total ?? 0}"; style: small; color: (errors.error_total ?? 0) > 0 ? yellow : muted; onTap: { settingsOpen = false; tab = "errors"; refresh(); screen() } }
+    Row {
+      gap: 8
+      Button { text: zh ? "日誌" : "Logs"; weight: 1; onTap: { settingsOpen = false; tab = "logs"; refresh(); screen() } }
+      Button { text: zh ? "專案" : "Files"; weight: 1; onTap: { settingsOpen = false; tab = "files"; refresh(); screen() } }
+    }
+    }
+  }
+  screen {
+    title: "DEV LOGS"
+    Column {
+      fill: true
+      gap: 10
+      Row {
+        Text { text: settingsOpen ? (zh ? "設定" : "Settings") : (zh ? "本機開發工作台" : "Local workspace"); style: label; color: muted; weight: 1 }
+        Button { text: settingsOpen ? (zh ? "返回" : "Back") : (zh ? "設定" : "Settings"); onTap: settingsOpen = !settingsOpen }
+      }
+      if !ready { Setup {} } else if settingsOpen {
+        Column {
+          scroll: true
+          weight: 1
+          gap: 12
+          Text { text: zh ? "語言" : "Language"; style: label; color: accent }
+          Row {
+            gap: 8
+            Button { text: "English"; weight: 1; color: zh ? muted : accent; onTap: language = "en" }
+            Button { text: "繁體中文"; weight: 1; color: zh ? accent : muted; onTap: language = "zh" }
+          }
+          Text { text: zh ? "Agent 記錄設定" : "Agent log setup"; style: label; color: accent }
+          Text { text: zh ? "複製並貼給 Codex／Claude，請它儲存規則。之後由 agent 記錄重要進展。" : "Copy and send to Codex / Claude to save the rules. Your agent then records important progress."; style: small; color: muted }
+          Button { text: agentPromptCopied ? (zh ? "已複製 · 再次複製" : "Copied · Copy again") : (zh ? "複製提示詞" : "Copy prompt"); fill: width; onTap: { copy(agentPrompt); agentPromptCopied = true } }
+          Text { text: agentPrompt; style: small; padding: 12; background: surface }
+        }
+      } else {
+      Row {
+        gap: 8
+        Button { text: zh ? "日誌" : "Logs"; weight: 1; color: tab == "logs" ? accent : muted; onTap: { tab = "logs"; refresh() } }
+        Button { text: zh ? "系統" : "System"; weight: 1; color: tab == "errors" ? accent : muted; onTap: { tab = "errors"; refresh() } }
+        Button { text: zh ? "專案" : "Files"; weight: 1; color: tab == "files" ? accent : muted; onTap: { tab = "files"; refresh() } }
+        Button { text: zh ? "更新" : "Refresh"; weight: 1; onTap: refresh() }
+      }
+      Text { text: zh ? "${desk.entries ?? 0} 條開發日誌 · 自動更新 ${desk.updated ?? "…"}" : "${desk.entries ?? 0} dev logs · Auto updated ${desk.updated ?? "…"}"; style: small; color: muted }
+      if snapshot.ok == false { Text { text: snapshot.err; color: red; maxLines: 3 } }
+      if tab == "logs" {
+        Input {
+          placeholder: zh ? "寫一條日誌，按送出儲存" : "Write a log, press Enter to save"
+          clear: true
+          onSubmit: { result = "儲存中…"; result = run("python ~/.local/bin/oma-devlogs log ${sh(value)} 2>&1") }
+        }
+        Text { text: result == "儲存中…" ? (zh ? "儲存中…" : "Saving…") : startsWith(result, "已記錄") ? (zh ? "已儲存" : "Saved") : result; style: small; color: accent; maxLines: 2 }
+        Row {
+          Button { text: (logs.day ?? "—") + (datesOpen ? " ▴" : " ▾"); weight: 1; onTap: datesOpen = !datesOpen }
+          Button { text: zh ? "最新" : "Latest"; weight: 1; onTap: { day = ""; logOffset = 0; refresh() } }
+        }
+        Column {
+          scroll: true
+          weight: 1
+          gap: 10
+          if datesOpen {
+          Flow {
+            for date in (logs.days ?? []) {
+              Button { text: date; color: date == logs.day ? accent : muted; onTap: { day = date; logOffset = 0; datesOpen = false; refresh() } }
+            }
+          }
+          }
+          Text { text: zh ? "${logs.total ?? 0} 條 · 從新到舊" : "${logs.total ?? 0} entries · Newest first"; style: label; color: accent }
+          if archive.ok == false { Text { text: archive.err; color: red } }
+          if (logs.total ?? 0) == 0 { Text { text: zh ? "此日期暫無日誌。可在設定中複製 Agent 記錄提示詞，或在上方手動記錄。" : "No logs for this date. Copy the agent logging prompt in Settings, or write a log above."; color: muted } }
+          for entry in (logs.entries ?? []) {
+            Text { text: entry; style: body; padding: 12; background: surface; radius: 6 * corners }
+          }
+          Row {
+            if logOffset > 0 { Button { text: zh ? "上一頁" : "Previous"; onTap: { logOffset = max(0, logOffset - 40); refresh() } } }
+            if logs.more { Button { text: zh ? "下一頁" : "Next"; onTap: { logOffset = logOffset + 40; refresh() } } }
+          }
+        }
+      } else if tab == "errors" {
+        Row {
+          gap: 8
+          Button { text: zh ? "錯誤" : "Errors"; weight: 1; color: errorLevel == "error" ? accent : muted; onTap: { errorLevel = "error"; refresh() } }
+          Button { text: zh ? "警告" : "Warnings"; weight: 1; color: errorLevel == "warning" ? accent : muted; onTap: { errorLevel = "warning"; refresh() } }
+          Button { text: zh ? "全部" : "All"; weight: 1; color: errorLevel == "all" ? accent : muted; onTap: { errorLevel = "all"; refresh() } }
+        }
+        Text { text: zh ? "自動保留最近 500 筆；時間為收集時間。終端診斷只收集已啟用紀錄的 stderr 與異常退出碼；整個環境被終止時可能無紀錄。" : "Keeps 500 records; times indicate collection. Terminal diagnostics require logging to be enabled. Environment termination may leave no record."; style: small; color: muted }
+        Text { text: zh ? "${errors.total ?? 0} 筆紀錄 · 展開後可複製單筆報告" : "Records: ${errors.total ?? 0} · Expand to copy one report"; color: accent; style: small }
+        Column {
+          scroll: true
+          weight: 1
+          gap: 10
+          if systemErrors.ok == false { Text { text: systemErrors.err; color: red } }
+          if (errors.total ?? 0) == 0 { Text { text: zh ? "此篩選下暫無紀錄。" : "No records for this filter."; color: muted } }
+          for entry in (errors.entries ?? []) key entry.id {
+            Column {
+              padding: 12
+              background: surface
+              gap: 6
+              Column {
+                gap: 6
+                onTap: expandedError = expandedError == entry.id ? 0 : entry.id
+                Text { text: (expandedError == entry.id ? "▴ " : "▾ ") + entry.name; style: small; color: accent; maxLines: 1; fill: width }
+                Text { text: entry.time; style: small; color: muted }
+                Text { text: entry.level == "error" ? (zh ? "錯誤" : "Error") : entry.level == "warning" ? (zh ? "警告" : "Warning") : (zh ? "資訊" : "Info"); style: small; color: entry.level == "error" ? red : entry.level == "warning" ? yellow : muted }
+                if expandedError != entry.id { Text { text: entry.summary; style: small; maxLines: 2 } }
+              }
+              if expandedError == entry.id {
+                Text { text: entry.source; style: small; font: mono; color: muted }
+                Button { text: copiedError == entry.id ? (zh ? "已複製此筆 · 再次複製" : "Copied · Copy again") : (zh ? "複製此筆報告" : "Copy this report"); fill: width; onTap: { copy(entry.report); copiedError = entry.id } }
+                Text { text: entry.text; style: small; font: mono }
+              }
+            }
+          }
+          Row {
+            if errorOffset > 0 { Button { text: zh ? "上一頁" : "Previous"; onTap: { errorOffset = max(0, errorOffset - 20); refresh() } } }
+            if errors.more { Button { text: zh ? "下一頁" : "Next"; onTap: { errorOffset = errorOffset + 20; refresh() } } }
+          }
+        }
+      } else {
+        Row {
+          Button { text: zh ? "位置 ▾" : "Location ▾"; weight: 1; onTap: pathsOpen = !pathsOpen }
+          Button { text: zh ? "上層" : "Up"; weight: 1; onTap: { folder = listing.parent ?? desk.home ?? "~"; offset = 0; refresh() } }
+        }
+        if pathsOpen {
+        Grid {
+          columns: 2
+          gap: 8
+          Button { text: zh ? "專案" : "Projects"; onTap: { folder = desk.projects ?? "~"; offset = 0; pathsOpen = false; refresh() } }
+          Button { text: zh ? "家目錄" : "Home"; onTap: { folder = desk.home ?? "~"; offset = 0; pathsOpen = false; refresh() } }
+          Button { text: zh ? "筆記" : "Notes"; onTap: { folder = "~/oma-devlogs/notes"; offset = 0; pathsOpen = false; refresh() } }
+          Button { text: zh ? "日誌檔案" : "Journal"; onTap: { folder = "~/oma-devlogs/journal"; offset = 0; pathsOpen = false; refresh() } }
+        }
+        }
+        Text { text: listing.path ?? folder; style: small; font: mono }
+        Input { placeholder: zh ? "輸入家目錄下的目錄路徑" : "Enter a directory under your home"; onSubmit: { folder = value; offset = 0; refresh() } }
+        Button { text: zh ? "新建 Markdown" : "New Markdown"; onTap: { createOpen = !createOpen; mdTitle = ""; fileResult = "" } }
+        if createOpen {
+          Row {
+            Input { text: mdTitle; placeholder: zh ? "Markdown 檔名" : "Markdown filename"; weight: 1; onChange: mdTitle = value; onSubmit: { fileResult = run("python ~/.local/bin/oma-devlogs new-at ${sh(listing.path ?? folder)} ${sh(value)} 2>&1"); mdTitle = "" } }
+            Button { text: zh ? "建立" : "Create"; onTap: { fileResult = run("python ~/.local/bin/oma-devlogs new-at ${sh(listing.path ?? folder)} ${sh(mdTitle)} 2>&1"); mdTitle = "" } }
+          }
+        }
+        if fileResult != "" { Text { text: !zh && startsWith(fileResult, "已建立") ? "Created · " + split(fileResult, " → ")[1] : !zh && startsWith(fileResult, "已移至") ? "Moved to trash" : fileResult; style: small; maxLines: 3; color: accent } }
+        if deletePath != "" {
+          Text { text: zh ? "刪除 ${last(split(deletePath, "/"))}？檔案將移至回收區。" : "Delete ${last(split(deletePath, "/"))}? The file will move to trash."; style: small; color: yellow }
+          Row {
+            Button { text: zh ? "確認刪除" : "Confirm delete"; color: red; onTap: { fileResult = run("python ~/.local/bin/oma-devlogs delete-md ${sh(deletePath)} 2>&1"); deletePath = "" } }
+            Button { text: zh ? "取消" : "Cancel"; onTap: deletePath = "" }
+          }
+        }
+        Text { text: zh ? "${listing.total ?? 0} 項 · 不顯示隱藏檔案" : "${listing.total ?? 0} items · Hidden files excluded"; style: label; color: muted }
+        Column {
+          scroll: true
+          weight: 1
+          gap: 8
+          if directory.ok == false { Text { text: directory.err; color: red } }
+          if listing.error { Text { text: listing.error; color: red } }
+          for item in (listing.items ?? []) key item.path {
+            if item.dir {
+              Button { text: "▸ " + item.name + "/"; fill: width; onTap: { folder = item.path; offset = 0; refresh() } }
+            } else {
+              Column {
+                gap: 4
+                Row {
+                  Text { text: item.name; weight: 1; style: small }
+                  Text { text: fmtBytes(item.size); width: 56; style: small; color: muted; align: end }
+                }
+                Row {
+                  Button { text: zh ? "查看" : "View"; onTap: terminal("less -- ${sh(item.path)}", item.name) }
+                  if endsWith(lower(item.name), ".md") && !item.link {
+                    Button { text: zh ? "編輯" : "Edit"; onTap: terminal("micro -- ${sh(item.path)}", item.name) }
+                    Button { text: zh ? "刪除" : "Delete"; color: red; onTap: { deletePath = item.path; fileResult = "" } }
+                  }
+                }
+              }
+            }
+          }
+          if (listing.total ?? 0) == 0 && !listing.error { Text { text: zh ? "此目錄為空。" : "This directory is empty."; color: muted } }
+          Row {
+            if offset > 0 { Button { text: zh ? "上一頁" : "Previous"; onTap: { offset = max(0, offset - 40); refresh() } } }
+            if listing.more { Button { text: zh ? "下一頁" : "Next"; onTap: { offset = offset + 40; refresh() } } }
+          }
+        }
+      }
+      }
+    }
+  }
+}
